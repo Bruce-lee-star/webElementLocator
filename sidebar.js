@@ -659,14 +659,44 @@ function renderCustomProvidersList(selectedProvider){
   }
   if (empty) empty.style.display = 'none';
   customProviders.forEach(function(cp){
+    var item = document.createElement('div');
+    item.className = 'custom-provider-item';
+
     var div = document.createElement('div');
     div.className = 'ai-provider custom' + (selectedProvider === cp.id ? ' active' : '');
     div.setAttribute('data-provider', cp.id);
     div.innerHTML = '<i data-lucide="plug" class="provider-icon"></i><div class="provider-name">'+escapeHtml(cp.name)+'</div>';
     div.addEventListener('click', function(){ selectProvider(cp.id); });
-    wrap.appendChild(div);
+
+    var delBtn = document.createElement('button');
+    delBtn.className = 'custom-provider-delete-btn';
+    delBtn.title = 'Delete ' + escapeHtml(cp.name);
+    delBtn.innerHTML = '<svg class="delete-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+    delBtn.addEventListener('click', function(e){
+      e.stopPropagation();
+      e.preventDefault();
+      deleteCustomProvider(cp.id);
+    });
+
+    item.appendChild(div);
+    item.appendChild(delBtn);
+    wrap.appendChild(item);
   });
   try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){}
+}
+
+async function deleteCustomProvider(id){
+  if (!confirm('Delete this custom provider? This cannot be undone.')) return;
+  customProviders = customProviders.filter(function(cp){ return cp.id !== id; });
+  await setStorage({ customProviders: customProviders });
+  // If the deleted provider was currently selected, switch to default
+  var cfg = await getAiConfig();
+  if (cfg.provider === id) {
+    await selectProvider('chatgpt');
+  } else {
+    await loadAiConfigForm();
+  }
+  showToast('Provider deleted');
 }
 
 async function selectProvider(providerId){
