@@ -277,13 +277,40 @@ async function callAiOptimalLocator(payload, config, tabId) {
 async function handleTestAiConnection(request, sender, sendResponse) {
     try {
         const d = request.data || {};
-        // Accept both flat fields and nested config object from sidebar
         const src = d.config || d;
         const provider = src.provider || 'chatgpt';
-        const model = src.model || (provider === 'chatgpt' ? 'gpt-4o-mini' : provider === 'gemini' ? 'gemini-2.0-flash' : provider === 'deepseek' ? 'deepseek-chat' : provider === 'claude' ? 'claude-3-haiku-20240307' : provider === 'ark' ? 'ep-xxxxxxxxxxxx' : 'gpt-4o-mini');
-        const cfg = { provider: provider, model: model, url: src.url || '', token: src.token || '', enabled: true };
-        const result = await callAiOptimalLocator({ snapshot: '<div>Hello</div>', elements: [{ tag: 'div', index: 0 }], userPrompt: '' }, cfg);
-        try { sendResponse({ ok: true, success: true, message: 'AI connection OK', raw: result }); } catch (e) {}
+        const model = src.model || '';
+        const apiUrl = src.url || '';
+        const token = src.token || '';
+        if (!token) throw new Error('No API token configured');
+        if (!apiUrl) throw new Error('No API URL configured');
+        if (!model) throw new Error('No model configured');
+
+        let headers = { 'Content-Type': 'application/json' };
+        let fetchUrl = apiUrl, body;
+        if (provider === 'gemini') {
+            fetchUrl = apiUrl + (apiUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(token);
+            body = JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'hello' }] }], generationConfig: { temperature: 0, maxOutputTokens: 10 } });
+        } else if (provider === 'claude') {
+            headers['x-api-key'] = token;
+            headers['anthropic-version'] = '2023-06-01';
+            body = JSON.stringify({ model: model, max_tokens: 10, messages: [{ role: 'user', content: 'hello' }] });
+        } else {
+            headers['Authorization'] = 'Bearer ' + token;
+            body = JSON.stringify({ model: model, messages: [{ role: 'user', content: 'hello' }], temperature: 0, max_tokens: 10 });
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(function(){ controller.abort('Test connection timed out after 15s'); }, 15000);
+        let resp;
+        try { resp = await fetch(fetchUrl, { method: 'POST', headers: headers, body: body, signal: controller.signal }); }
+        finally { clearTimeout(timeoutId); }
+
+        if (!resp.ok) {
+            const txt = await resp.text().catch(function(){ return ''; });
+            throw new Error('API ' + resp.status + ': ' + txt.slice(0, 200));
+        }
+        try { sendResponse({ ok: true, success: true, message: 'AI connection OK' }); } catch (e) {}
     } catch (err) {
         try { sendResponse({ ok: false, success: false, error: String(err && err.message || err) }); } catch (e) {}
     }
