@@ -1553,6 +1553,10 @@ AI SUGGESTIONS SECTION
     max-height: 260px;
   }
 
+.ai-suggestions-section.expanded:not(.chat-open) {
+    max-height: 200px;
+  }
+
 .ai-suggestions-section.chat-open {
     max-height: 420px;
   }
@@ -2174,6 +2178,9 @@ TOAST VE NOTIFICATION SISTEMLERI
   .ai-suggestions-section.expanded {
       max-height: 200px;
   }
+  .ai-suggestions-section.expanded:not(.chat-open) {
+      max-height: 150px;
+  }
   .ai-suggestions-section.chat-open {
       max-height: 300px;
   }
@@ -2446,15 +2453,19 @@ AI CHAT WINDOW (refactored)
   30% { opacity: 1; transform: translateY(-4px); }
 }
 
-/* Always-visible chat input bar at bottom of AI Bar */
+/* Chat input bar at bottom of AI Bar — only visible when chat is open */
 .ai-chat-input-bar {
-  display: flex;
+  display: none;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
   background: white;
   border-top: 1px solid var(--border-light);
   flex-shrink: 0;
+}
+
+.ai-suggestions-section.chat-open .ai-chat-input-bar {
+  display: flex;
 }
 
 .chat-input-inline {

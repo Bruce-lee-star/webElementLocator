@@ -391,8 +391,6 @@ async function askAiForAllLocators(){
     }
     return item;
   });
-  capturedElements.forEach(function(el){ el.ai = { waiting: true }; });
-  updateCapturedElementsList();
   try {
     var activeSystemPrompt = getActiveSystemPrompt();
     var resp = await requestOptimalLocatorsBatch(elementsForAI, userPrompt, activeSystemPrompt);
