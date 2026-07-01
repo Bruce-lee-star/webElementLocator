@@ -1230,7 +1230,7 @@ function closeAiChat(){
   var section = document.getElementById('aiSuggestionsSection');
   if (chatMsgs) chatMsgs.style.display = 'none';
   if (suggestions) suggestions.style.display = '';
-  if (section) { section.classList.remove('chat-open'); section.classList.remove('expanded'); }
+  if (section) { section.classList.remove('chat-open'); }
   chatOpen = false;
   updateChatToggleBtn();
 }
