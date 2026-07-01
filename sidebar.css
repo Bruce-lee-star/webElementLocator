@@ -1673,48 +1673,7 @@ AI SUGGESTIONS SECTION
   color: white;
 }
 
-/* Inline selectors inside AI Bar header */
-.ai-bar-inline-select {
-  -webkit-appearance: none;
-  appearance: none;
-  background: rgba(255,255,255,0.18) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E") no-repeat right 6px center;
-  color: white;
-  border: 1px solid rgba(255,255,255,0.3);
-  border-radius: 6px;
-  padding: 5px 22px 5px 8px;
-  font-size: 11px;
-  font-weight: 500;
-  cursor: pointer;
-  max-width: 140px;
-  min-width: 80px;
-  flex-shrink: 0;
-  outline: none;
-  transition: var(--transition-fast);
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-}
-.ai-bar-inline-select:focus {
-  background-color: rgba(255,255,255,0.28);
-  border-color: rgba(255,255,255,0.5);
-}
-.ai-bar-inline-select option {
-  color: var(--dark-text);
-  background: white;
-  font-size: 12px;
-}
-.ai-bar-inline-input {
-  background: rgba(255,255,255,0.15);
-  color: white;
-  border: 1px solid rgba(255,255,255,0.25);
-  border-radius: 6px;
-  padding: 5px 8px;
-  font-size: 11px;
-  max-width: 100px;
-  flex-shrink: 0;
-  outline: none;
-  transition: var(--transition-fast);
-}
+
 .ai-bar-inline-input::placeholder {
   color: rgba(255,255,255,0.55);
 }

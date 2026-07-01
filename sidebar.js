@@ -547,7 +547,6 @@ async function loadAiConfigForm(){
 
   // Populate token section
   populateTokenSection(cfg);
-  populateAiBarSelectors(cfg);
   updateAiProviderUi();
 }
 
@@ -668,7 +667,6 @@ async function selectProvider(providerId){
   }
   await saveAiConfig(cfg);
   populateTokenSection(cfg);
-  populateAiBarSelectors(cfg);
   updateAiProviderUi();
 
   document.querySelectorAll('#builtinAiProviders .ai-provider').forEach(function(el){
@@ -835,7 +833,6 @@ async function importAiConfigs(file){
       if (obj.customProviders) await setStorage({ customProviders: obj.customProviders });
       showToast('Config imported');
       await loadAiConfigForm();
-      await populateAiBarSelectors(await getAiConfig());
       updateAiProviderUi();
     } catch(err){
       showToast('Import failed: ' + (err && err.message || err));
@@ -1088,102 +1085,7 @@ function deletePromptTemplate(id) {
   showToast('Template deleted. Download complete — replace templates/templates.json in project, then reload.');
 }
 
-/* ===================== AI Bar Provider Selector ===================== */
 
-async function populateAiBarSelectors(cfg){
-  var sel = document.getElementById('aiBarProviderSelect');
-  var modelInput = document.getElementById('aiBarModelInput');
-
-  if (!sel) return;
-
-  // Build full list
-  var options = [];
-  Object.keys(PROVIDER_PRESETS).forEach(function(key){
-    options.push({ id: key, name: PROVIDER_PRESETS[key].label, model: PROVIDER_PRESETS[key].model, url: PROVIDER_PRESETS[key].url, builtin: true });
-  });
-  try {
-    var custom = await getStorage('customProviders');
-    if (Array.isArray(custom)) customProviders = custom;
-  } catch(e){}
-  customProviders.forEach(function(cp){
-    options.push({ id: cp.id, name: cp.name, model: cp.model || '', url: cp.url || '', builtin: false });
-  });
-
-  sel.innerHTML = '<option value="">AI Tool...</option>';
-  options.forEach(function(opt){
-    var o = document.createElement('option');
-    o.value = opt.id;
-    o.textContent = opt.name;
-    sel.appendChild(o);
-  });
-  if (cfg && cfg.provider) {
-    sel.value = cfg.provider;
-  }
-
-  // Model input
-  if (modelInput) {
-    if (cfg && cfg.model) modelInput.value = cfg.model;
-    else {
-      var presets = PROVIDER_PRESETS[cfg && cfg.provider] || {};
-      modelInput.value = presets.model || '';
-    }
-  }
-}
-
-async function onAiBarProviderChange(){
-  var sel = document.getElementById('aiBarProviderSelect');
-  var modelInput = document.getElementById('aiBarModelInput');
-  if (!sel) return;
-  var providerId = sel.value;
-  if (!providerId) return;
-
-  // Save current provider first
-  var cfg = await getAiConfig();
-  await saveAiConfig(cfg);
-
-  cfg.provider = providerId;
-  if (PROVIDER_PRESETS[providerId]) {
-    var p = PROVIDER_PRESETS[providerId];
-    cfg.name = p.label;
-    cfg.url = p.url;
-    cfg.model = (modelInput && modelInput.value) || p.model;
-    if (modelInput) modelInput.value = p.model;
-  } else {
-    var cp = customProviders.find(function(x){ return x.id === providerId; });
-    if (cp) {
-      cfg.name = cp.name;
-      cfg.url = cp.url;
-      cfg.model = (modelInput && modelInput.value) || cp.model || '';
-      if (modelInput) modelInput.value = cp.model || '';
-    }
-  }
-  // Load saved token/config for this provider
-  var configs = await getStorage('aiConfigs') || {};
-  if (configs[providerId]) {
-    cfg.token = configs[providerId].token || '';
-    cfg.model = configs[providerId].model || cfg.model;
-    cfg.url = configs[providerId].url || cfg.url;
-    cfg.enabled = configs[providerId].enabled !== false;
-  } else {
-    cfg.token = '';
-  }
-  await saveAiConfig(cfg);
-  updateAiProviderUi();
-
-  // Also refresh config form if open
-  var modal = document.getElementById('aiConfigModal');
-  if (modal && modal.style.display !== 'none') {
-    loadAiConfigForm();
-  }
-}
-
-async function onAiBarModelChange(){
-  var modelInput = document.getElementById('aiBarModelInput');
-  if (!modelInput) return;
-  var cfg = await getAiConfig();
-  cfg.model = modelInput.value.trim();
-  await saveAiConfig(cfg);
-}
 
 async function updateAiProviderUi(){
   var cfg = await getAiConfig();
@@ -1466,11 +1368,6 @@ function setupEventListeners(){
     });
   }
 
-  // AI Bar provider select
-  var aiBarProviderSelect = document.getElementById('aiBarProviderSelect');
-  if (aiBarProviderSelect) aiBarProviderSelect.addEventListener('change', onAiBarProviderChange);
-  var aiBarModelInput = document.getElementById('aiBarModelInput');
-  if (aiBarModelInput) aiBarModelInput.addEventListener('blur', onAiBarModelChange);
 
   // Code Template selector removed — dead HTML elements cleaned
 
@@ -1522,7 +1419,6 @@ function setupEventListeners(){
 
 async function initSidebar(){
   try { setupEventListeners(); } catch(e){ console.error('setupEventListeners error', e); }
-  try { await populateAiBarSelectors(await getAiConfig()); } catch(e){}
   try { await updateAiProviderUi(); } catch(e){}
   try { updateCapturedElementsList(); } catch(e){}
   try { await loadPromptTemplates(); } catch(e){}
