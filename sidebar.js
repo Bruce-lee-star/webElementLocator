@@ -99,6 +99,8 @@ async function loadConfigFromFile() {
       if (!fileConfig.aiConfigs) fileConfig.aiConfigs = {};
       if (!fileConfig.currentProvider) fileConfig.currentProvider = 'chatgpt';
       if (!fileConfig.customProviders) fileConfig.customProviders = [];
+      if (!fileConfig.promptRules) fileConfig.promptRules = null;
+      if (!fileConfig.customPromptTemplates) fileConfig.customPromptTemplates = [];
       // Sync to storage so background.js can access it
       await setStorage({
         aiConfigs: fileConfig.aiConfigs,
@@ -127,10 +129,14 @@ async function loadConfigFromFile() {
     }
   }
   var customProvidersArr = await getStorage('customProviders') || [];
+  var savedPromptRules = await getStorage('promptRules') || null;
+  var savedCustomTemplates = await getStorage('customPromptTemplates') || [];
   fileConfig = {
     aiConfigs: configs,
     currentProvider: current || 'chatgpt',
-    customProviders: customProvidersArr
+    customProviders: customProvidersArr,
+    promptRules: savedPromptRules,
+    customPromptTemplates: savedCustomTemplates
   };
 }
 
@@ -292,7 +298,8 @@ async function requestOptimalLocatorsBatch(elementsArray, userPrompt, systemProm
   try {
     var cfg = await getAiConfig();
     if (!cfg || !cfg.token) return { ok:false, error:'AI token not configured. Open gear -> AI Settings.' };
-    var rules = await getStorage('promptRules');
+    if (!fileConfig) await loadConfigFromFile();
+    var rules = fileConfig && fileConfig.promptRules;
     var resp = await sendRuntimeMessage({
       type: 'REQUEST_OPTIMAL_LOCATOR',
       data: {
@@ -981,7 +988,9 @@ async function savePromptRules(){
   var custom = (document.getElementById('customPromptRules').value || '').trim();
 
   var payload = { frameworks: frameworks, rules: rules, custom: custom };
-  await setStorage({ promptRules: payload });
+  if (!fileConfig) await loadConfigFromFile();
+  fileConfig.promptRules = payload;
+  await saveFileConfig();
   var modal = document.getElementById('promptRulesModal');
   if (modal) modal.style.display = 'none';
   showToast('Rules saved');
@@ -1002,10 +1011,20 @@ async function loadPromptTemplates() {
     if (resp.ok) {
       var data = await resp.json();
       if (Array.isArray(data)) {
-        promptTemplates = data;
+        promptTemplates = data.map(function(t){ t.isBuiltin = true; return t; });
       }
     }
   } catch(e) { /* file not found or invalid, will use fallback */ }
+
+  // Merge user-defined custom prompt templates from config.json
+  if (!fileConfig) await loadConfigFromFile();
+  var customTpls = (fileConfig && fileConfig.customPromptTemplates) || [];
+  if (Array.isArray(customTpls)) {
+    customTpls.forEach(function(ct){
+      var existing = promptTemplates.find(function(t){ return t.id === ct.id; });
+      if (!existing) promptTemplates.push(ct);
+    });
+  }
 
   // Fallback: ensure at least the default template exists in-memory
   if (!promptTemplates.length || !promptTemplates.some(function(t){ return t.id === DEFAULT_PROMPT_TEMPLATE_ID; })) {
@@ -1071,7 +1090,7 @@ function renderPromptTemplateList() {
   if (!promptTemplates.length) {
     list.innerHTML = '<div class="no-custom-providers"><i data-lucide="file-text" class="empty-icon"></i><p>No prompt templates. Create one below.</p></div>';
   } else {
-    var html = '<div class="template-dir-hint"><i data-lucide="folder" class="label-icon"></i> Source: <code>' + escapeHtml(PROMPT_TEMPLATE_FILE) + '</code> — edit this file in your IDE to persist templates.</div>';
+    var html = '<div class="template-dir-hint"><i data-lucide="folder" class="label-icon"></i> Custom templates are persisted automatically in <code>config.json</code>.</div>';
     promptTemplates.forEach(function(t){
       var preview = (t.systemPrompt || '').slice(0, 80) + ((t.systemPrompt || '').length > 80 ? '...' : '');
       var builtinBadge = t.isBuiltin ? ' <small style="color:#999;">(builtin)</small>' : '';
@@ -1124,7 +1143,7 @@ function editPromptTemplate(id) {
   document.getElementById('promptTemplateFormTitle').textContent = 'Edit Prompt Template';
 }
 
-function savePromptTemplate() {
+async function savePromptTemplate() {
   var nameEl = document.getElementById('promptTemplateFormName');
   var promptEl = document.getElementById('promptTemplateFormPrompt');
   var idEl = document.getElementById('promptTemplateFormId');
@@ -1146,6 +1165,14 @@ function savePromptTemplate() {
   if (existingIdx >= 0) promptTemplates[existingIdx] = entry;
   else promptTemplates.push(entry);
 
+  // Persist to config.json
+  if (!fileConfig) await loadConfigFromFile();
+  var customTpls = promptTemplates.filter(function(t){ return !t.isBuiltin; }).map(function(t){
+    return { id: t.id, name: t.name, systemPrompt: t.systemPrompt, isBuiltin: false };
+  });
+  fileConfig.customPromptTemplates = customTpls;
+  await saveFileConfig();
+
   renderPromptTemplateList();
   renderPromptTemplateDropdown();
 
@@ -1153,9 +1180,7 @@ function savePromptTemplate() {
   var sel = document.getElementById('promptTemplateSelect');
   if (sel) sel.value = id;
 
-  // Trigger download of the complete templates.json so user can replace project file
-  downloadFullTemplatesFile();
-  showToast('Template saved. Download complete — replace templates/templates.json in project, then reload the extension.');
+  showToast('Template saved');
 }
 
 function downloadFullTemplatesFile() {
@@ -1193,9 +1218,15 @@ function deletePromptTemplate(id) {
   }
   renderPromptTemplateList();
   renderPromptTemplateDropdown();
-  // Also download updated templates.json
-  downloadFullTemplatesFile();
-  showToast('Template deleted. Download complete — replace templates/templates.json in project, then reload.');
+  // Persist to config.json
+  if (fileConfig) {
+    var customTpls = promptTemplates.filter(function(t){ return !t.isBuiltin; }).map(function(t){
+      return { id: t.id, name: t.name, systemPrompt: t.systemPrompt, isBuiltin: false };
+    });
+    fileConfig.customPromptTemplates = customTpls;
+    saveFileConfig();
+  }
+  showToast('Template deleted');
 }
 
 

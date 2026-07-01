@@ -2,6 +2,8 @@
   "aiConfigs": {},
   "currentProvider": "chatgpt",
   "customProviders": [],
+  "promptRules": null,
+  "customPromptTemplates": [],
   "version": "1.0",
   "updatedAt": ""
 }
