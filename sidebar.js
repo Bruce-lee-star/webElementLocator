@@ -91,28 +91,7 @@ function setStorage(obj){
 }
 
 async function loadConfigFromFile() {
-  // Read config.json from extension root — primary source of truth
-  try {
-    var url = chrome.runtime.getURL(CONFIG_FILE);
-    var resp = await fetch(url);
-    if (resp.ok) {
-      fileConfig = await resp.json();
-      if (!fileConfig.aiConfigs) fileConfig.aiConfigs = {};
-      if (!fileConfig.currentProvider) fileConfig.currentProvider = 'chatgpt';
-      if (!fileConfig.customProviders) fileConfig.customProviders = [];
-      if (!fileConfig.promptRules) fileConfig.promptRules = null;
-      if (!fileConfig.customPromptTemplates) fileConfig.customPromptTemplates = [];
-      // Sync to storage so background.js can access it
-      await setStorage({
-        aiConfigs: fileConfig.aiConfigs,
-        currentProvider: fileConfig.currentProvider,
-        customProviders: fileConfig.customProviders
-      });
-      return;
-    }
-  } catch(e) { /* config.json not found or invalid, fall back to storage */ }
-
-  // Fallback: load from chrome.storage.local
+  // Primary source of truth is chrome.storage.local (runtime persistence)
   var configs = await getStorage('aiConfigs') || {};
   var current = await getStorage('currentProvider');
   // Migrate old single-provider format
@@ -132,14 +111,50 @@ async function loadConfigFromFile() {
   var customProvidersArr = await getStorage('customProviders') || [];
   var savedPromptRules = await getStorage('promptRules') || null;
   var savedCustomTemplates = await getStorage('customPromptTemplates') || [];
+  var savedSelectedTemplateId = await getStorage('selectedPromptTemplateId') || '';
+
+  // If storage is completely empty, fall back to bundled config.json for defaults
+  if (!Object.keys(configs).length && !customProvidersArr.length && !savedPromptRules && !savedCustomTemplates.length && !savedSelectedTemplateId) {
+    try {
+      var url = chrome.runtime.getURL(CONFIG_FILE);
+      var resp = await fetch(url);
+      if (resp.ok) {
+        var fileCfg = await resp.json();
+        configs = fileCfg.aiConfigs || {};
+        current = fileCfg.currentProvider || 'chatgpt';
+        customProvidersArr = fileCfg.customProviders || [];
+        savedPromptRules = fileCfg.promptRules || null;
+        savedCustomTemplates = fileCfg.customPromptTemplates || [];
+      }
+    } catch(e) { /* config.json not found or invalid */ }
+  }
+
   fileConfig = {
     aiConfigs: configs,
     currentProvider: current || 'chatgpt',
     customProviders: customProvidersArr,
     promptRules: savedPromptRules,
-    customPromptTemplates: savedCustomTemplates
+    customPromptTemplates: savedCustomTemplates,
+    selectedPromptTemplateId: savedSelectedTemplateId
   };
+
+  // Ensure defaults
+  if (!fileConfig.aiConfigs) fileConfig.aiConfigs = {};
+  if (!fileConfig.currentProvider) fileConfig.currentProvider = 'chatgpt';
+  if (!fileConfig.customProviders) fileConfig.customProviders = [];
+  if (!fileConfig.customPromptTemplates) fileConfig.customPromptTemplates = [];
+
+  // Sync to storage so background.js can access it
+  await setStorage({
+    aiConfigs: fileConfig.aiConfigs,
+    currentProvider: fileConfig.currentProvider,
+    customProviders: fileConfig.customProviders,
+    promptRules: fileConfig.promptRules,
+    customPromptTemplates: fileConfig.customPromptTemplates,
+    selectedPromptTemplateId: fileConfig.selectedPromptTemplateId
+  });
 }
+
 
 async function saveFileConfig() {
   if (!fileConfig) return;
@@ -148,7 +163,10 @@ async function saveFileConfig() {
   await setStorage({
     aiConfigs: fileConfig.aiConfigs || {},
     currentProvider: fileConfig.currentProvider || 'chatgpt',
-    customProviders: fileConfig.customProviders || []
+    customProviders: fileConfig.customProviders || [],
+    promptRules: fileConfig.promptRules || null,
+    customPromptTemplates: fileConfig.customPromptTemplates || [],
+    selectedPromptTemplateId: fileConfig.selectedPromptTemplateId || ''
   });
   // Write to config.json via background service worker
   try {
@@ -431,21 +449,31 @@ async function askAiForAllLocators(){
   var btn = document.getElementById('askAiBtn');
   if (btn) { btn.disabled = true; btn.textContent = 'Asking...'; }
 
-  // Read user prompt from input field
-  var promptInput = document.getElementById('aiUserPrompt');
-  var userPrompt = promptInput ? (promptInput.value || '').trim() : '';
-  if (promptInput) promptInput.value = '';
+  // Also set send button to stop state so user can cancel via send button
+  var sendBtn = document.getElementById('aiChatSendBtn');
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.add('chat-send-btn-stop'); sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>'; sendBtn.title = 'Stop'; }
 
-  // Auto-expand AI bar and open chat
+  // Read user prompt from textarea
+  var textarea = document.getElementById('aiChatInput');
+  var userPrompt = textarea ? (textarea.value || '').trim() : '';
+  if (textarea) textarea.value = '';
+
+  // Ensure AI bar is expanded
   var section = document.getElementById('aiSuggestionsSection');
   if (section) section.classList.add('expanded');
-  if (!chatOpen) openAiChat();
 
   // Build user message: elements + prompt
   var userMsg = 'Generate reliable CSS selectors and XPath locators for the following elements:\n\n';
   userMsg += formatElementsForUserMessage();
   if (userPrompt) {
     userMsg += '\n--- Additional Instruction ---\n' + userPrompt;
+  }
+  // Include selected prompt template content in the user message
+  if (selectedPromptTemplateId) {
+    var tpl = promptTemplates.find(function(t){ return t.id === selectedPromptTemplateId; });
+    if (tpl && tpl.systemPrompt) {
+      userMsg += '\n\n=== Prompt Template: ' + tpl.name + ' ===\n' + tpl.systemPrompt;
+    }
   }
   appendChatBubble('user', userMsg);
 
@@ -493,8 +521,9 @@ async function askAiForAllLocators(){
     }
   } catch(e){
     var isAborted = (e && e.name === 'AbortError') || (e && typeof e.message === 'string' && (e.message.indexOf('aborted') !== -1 || e.message.indexOf('AbortError') !== -1));
-    var errMsg = isAborted ? 'Request cancelled by user' : String(e.message || e);
-    capturedElements.forEach(function(el){ el.ai = { error: errMsg }; });
+    if (!isAborted) {
+      capturedElements.forEach(function(el){ el.ai = { error: String(e.message || e) }; });
+    }
   }
 
   removeChatLoadingIndicator(loadId);
@@ -514,6 +543,7 @@ async function askAiForAllLocators(){
   
   updateCapturedElementsList();
   if (btn) { btn.disabled = false; btn.textContent = 'Ask'; }
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.remove('chat-send-btn-stop'); sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; sendBtn.title = 'Send'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
 }
 
 function handleSidebarMessage(type, data){
@@ -1034,8 +1064,8 @@ async function loadPromptTemplates() {
     promptTemplates.unshift({ id: DEFAULT_PROMPT_TEMPLATE_ID, name: 'Default (Comprehensive)', systemPrompt: DEFAULT_SYSTEM_PROMPT, isBuiltin: true });
   }
 
-  // selectedPromptTemplateId is in-memory only, resets on reload
-  selectedPromptTemplateId = '';
+  // Restore previously selected template from config
+  selectedPromptTemplateId = (fileConfig && fileConfig.selectedPromptTemplateId) || '';
   renderPromptTemplateDropdown();
 }
 
@@ -1074,6 +1104,11 @@ function onPromptTemplateChange() {
     return;
   }
   selectedPromptTemplateId = val || '';
+  // Persist selection to storage
+  if (fileConfig) {
+    fileConfig.selectedPromptTemplateId = selectedPromptTemplateId;
+    saveFileConfig();
+  }
 }
 
 function openPromptTemplateMgmt() {
@@ -1227,6 +1262,7 @@ function deletePromptTemplate(id) {
       return { id: t.id, name: t.name, systemPrompt: t.systemPrompt, isBuiltin: false };
     });
     fileConfig.customPromptTemplates = customTpls;
+    fileConfig.selectedPromptTemplateId = selectedPromptTemplateId;
     saveFileConfig();
   }
   showToast('Template deleted');
@@ -1240,12 +1276,17 @@ async function updateAiProviderUi(){
   var sectionEl = document.getElementById('aiToolNameInSection');
   var displayEl = document.getElementById('aiToolDisplay');
   var labelEl = document.getElementById('aiEntryLabel');
+  var badgeEl = document.getElementById('aiToolBadgeInBar');
+  var modelBadgeEl = document.getElementById('aiModelBadgeInBar');
 
   var label = cfg.name || (PROVIDER_PRESETS[cfg.provider] && PROVIDER_PRESETS[cfg.provider].label) || cfg.provider || 'No AI Selected';
+  var modelLabel = cfg.model || '—';
 
   if (nameEl) nameEl.textContent = label;
   if (sectionEl) sectionEl.textContent = label;
   if (labelEl) labelEl.textContent = 'AI: ' + label;
+  if (badgeEl) badgeEl.textContent = label;
+  if (modelBadgeEl) modelBadgeEl.textContent = modelLabel;
   if (displayEl) {
     if (cfg.token && cfg.enabled !== false) displayEl.style.display = 'flex';
     else displayEl.style.display = 'none';
@@ -1255,55 +1296,15 @@ async function updateAiProviderUi(){
 /* ===================== AI Chat ===================== */
 
 var chatHistory = [];
-var chatOpen = false;
-
-function openAiChat(){
-  var chatMsgs = document.getElementById('aiChatMessages');
-  var suggestions = document.getElementById('aiSuggestions');
-  var section = document.getElementById('aiSuggestionsSection');
-  if (chatMsgs) chatMsgs.style.display = 'flex';
-  if (suggestions) suggestions.style.display = 'none';
-  if (section) { section.classList.add('chat-open'); section.classList.add('expanded'); }
-  chatOpen = true;
-  updateChatToggleBtn();
-
-  var input = document.getElementById('aiChatInput');
-  if (input) setTimeout(function(){ input.focus(); }, 100);
-}
-
-function closeAiChat(){
-  var chatMsgs = document.getElementById('aiChatMessages');
-  var suggestions = document.getElementById('aiSuggestions');
-  var section = document.getElementById('aiSuggestionsSection');
-  if (chatMsgs) chatMsgs.style.display = 'none';
-  if (suggestions) suggestions.style.display = '';
-  if (section) { section.classList.remove('chat-open'); }
-  chatOpen = false;
-  updateChatToggleBtn();
-}
 
 function toggleAiBar(){
   var section = document.getElementById('aiSuggestionsSection');
   if (!section) return;
   if (section.classList.contains('expanded')) {
     section.classList.remove('expanded');
-    if (chatOpen) closeAiChat();
   } else {
     section.classList.add('expanded');
   }
-}
-
-function updateChatToggleBtn(){
-  var btn = document.getElementById('aiChatOpenBtn');
-  if (!btn) return;
-  if (chatOpen) {
-    btn.innerHTML = '<i data-lucide="x" class="btn-icon"></i>Close';
-    btn.style.background = 'rgba(255,255,255,0.25)';
-  } else {
-    btn.innerHTML = '<i data-lucide="message-circle" class="btn-icon"></i>Chat';
-    btn.style.background = '';
-  }
-  try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){}
 }
 
 async function sendAiChatMessage(){
@@ -1312,20 +1313,36 @@ async function sendAiChatMessage(){
   var msg = input ? (input.value || '').trim() : '';
   if (!msg) return;
 
+  // Immediately change send button to stop state for instant visual feedback
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.add('chat-send-btn-stop'); sendBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>'; sendBtn.title = 'Stop'; }
+
   var cfg = await getAiConfig();
   if (!cfg || !cfg.token) {
+    // Reset button since config is missing
+    if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.remove('chat-send-btn-stop'); sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; sendBtn.title = 'Send'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
     appendChatBubble('ai', 'Please configure an AI provider first. Click the gear icon → AI Settings.');
     return;
   }
 
-  // Auto-open chat if not open
-  if (!chatOpen) openAiChat();
+  // Ensure AI bar is expanded
+  var section = document.getElementById('aiSuggestionsSection');
+  if (section) section.classList.add('expanded');
 
   if (input) input.value = '';
-  if (sendBtn) { sendBtn.disabled = true; sendBtn.innerHTML = '<span class="loading-dots"><span>.</span><span>.</span><span>.</span></span>'; }
+
+  // Use active prompt template as system prompt
+  var systemPrompt = getActiveSystemPrompt();
+  // Include template content in the user message so it is visible in the chat
+  var fullMessage = msg;
+  if (selectedPromptTemplateId) {
+    var tpl = promptTemplates.find(function(t){ return t.id === selectedPromptTemplateId; });
+    if (tpl && tpl.systemPrompt) {
+      fullMessage = '=== Prompt Template: ' + tpl.name + ' ===\n' + tpl.systemPrompt + '\n\n=== User Message ===\n' + msg;
+    }
+  }
 
   // Add user bubble
-  appendChatBubble('user', msg);
+  appendChatBubble('user', fullMessage);
 
   // Add loading indicator
   var loadId = addChatLoadingIndicator();
@@ -1333,7 +1350,7 @@ async function sendAiChatMessage(){
   try {
     var resp = await sendRuntimeMessage({
       type: 'REQUEST_CHAT_AI',
-      data: { message: msg, provider: cfg.provider, modelName: cfg.model }
+      data: { message: fullMessage, provider: cfg.provider, modelName: cfg.model, systemPrompt: systemPrompt }
     });
     removeChatLoadingIndicator(loadId);
     if (resp && resp.ok && resp.text) {
@@ -1344,15 +1361,15 @@ async function sendAiChatMessage(){
   } catch(e){
     removeChatLoadingIndicator(loadId);
     var isAborted = (e && e.name === 'AbortError') || (e && typeof e.message === 'string' && (e.message.indexOf('aborted') !== -1 || e.message.indexOf('AbortError') !== -1));
-    appendChatBubble('ai', isAborted ? 'Request cancelled' : ('Error: ' + String(e.message || e)));
+    if (!isAborted) appendChatBubble('ai', 'Error: ' + String(e.message || e));
   }
 
-  if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.remove('chat-send-btn-stop'); sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; sendBtn.title = 'Send'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
   if (input) setTimeout(function(){ input.focus(); }, 100);
 }
 
 function appendChatBubble(role, text, isHtml){
-  var msgs = document.getElementById('aiChatMessages');
+  var msgs = document.getElementById('aiSuggestions');
   if (!msgs) return;
   var bubble = document.createElement('div');
   bubble.className = 'chat-bubble chat-bubble-' + role;
@@ -1363,7 +1380,7 @@ function appendChatBubble(role, text, isHtml){
 }
 
 function addChatLoadingIndicator(text){
-  var msgs = document.getElementById('aiChatMessages');
+  var msgs = document.getElementById('aiSuggestions');
   if (!msgs) return null;
   var bubble = document.createElement('div');
   bubble.className = 'chat-bubble chat-bubble-ai chat-bubble-loading';
@@ -1372,17 +1389,6 @@ function addChatLoadingIndicator(text){
   var id = 'chat_load_' + Date.now();
   bubble.id = id;
   msgs.appendChild(bubble);
-
-  // Add stop button
-  var stopBtn = document.createElement('button');
-  stopBtn.className = 'chat-loading-stop-btn';
-  stopBtn.textContent = '✕ Stop';
-  stopBtn.title = 'Cancel AI request';
-  stopBtn.addEventListener('click', function(e){
-    e.stopPropagation();
-    cancelCurrentAiRequest();
-  });
-  bubble.appendChild(stopBtn);
 
   msgs.scrollTop = msgs.scrollHeight;
   pendingAiLoadId = id;
@@ -1396,6 +1402,24 @@ function removeChatLoadingIndicator(id){
   if (el) el.remove();
 }
 
+function handleAskAiBtnClick(){
+  var btn = document.getElementById('askAiBtn');
+  if (btn && btn.textContent === 'Asking...') {
+    cancelCurrentAiRequest();
+  } else {
+    askAiForAllLocators();
+  }
+}
+
+function handleChatSendBtnClick(){
+  var sendBtn = document.getElementById('aiChatSendBtn');
+  if (sendBtn && sendBtn.classList.contains('chat-send-btn-stop')) {
+    cancelCurrentAiRequest();
+  } else {
+    sendAiChatMessage();
+  }
+}
+
 function cancelCurrentAiRequest(){
   var loadId = pendingAiLoadId;
   if (loadId) removeChatLoadingIndicator(loadId);
@@ -1407,7 +1431,7 @@ function cancelCurrentAiRequest(){
 
   // Reset chat send button
   var sendBtn = document.getElementById('aiChatSendBtn');
-  if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.classList.remove('chat-send-btn-stop'); sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; sendBtn.title = 'Send'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
 
   // Send cancel to background
   sendRuntimeMessage({ type: 'CANCEL_AI_REQUESTS' }).catch(function(){});
@@ -1459,15 +1483,8 @@ function setupEventListeners(){
 
   // AI Ask (in AI Bar)
   var askAiBtn = document.getElementById('askAiBtn');
-  if (askAiBtn) askAiBtn.addEventListener('click', askAiForAllLocators);
+  if (askAiBtn) askAiBtn.addEventListener('click', handleAskAiBtnClick);
 
-  // AI user prompt Enter
-  var aiUserPrompt = document.getElementById('aiUserPrompt');
-  if (aiUserPrompt) aiUserPrompt.addEventListener('keydown', function(e){
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-      e.preventDefault(); askAiForAllLocators();
-    }
-  });
 
   // Prompt Rules
   var promptRulesBtn = document.getElementById('openPromptRulesBtn');
@@ -1563,11 +1580,6 @@ function setupEventListeners(){
   var ptplModal = document.getElementById('promptTemplateMgmtModal');
   if (ptplModal) ptplModal.addEventListener('click', function(e){ if (e.target === ptplModal) closePromptTemplateMgmt(); });
 
-  // AI Chat
-  var chatOpenBtn = document.getElementById('aiChatOpenBtn');
-  if (chatOpenBtn) chatOpenBtn.addEventListener('click', function(){
-    if (chatOpen) closeAiChat(); else openAiChat();
-  });
 
   // AI Bar header click to expand/collapse
   var aiSectionHeader = document.querySelector('.ai-section-header');
@@ -1577,11 +1589,11 @@ function setupEventListeners(){
     toggleAiBar();
   });
   var chatSendBtn = document.getElementById('aiChatSendBtn');
-  if (chatSendBtn) chatSendBtn.addEventListener('click', sendAiChatMessage);
+  if (chatSendBtn) chatSendBtn.addEventListener('click', handleChatSendBtnClick);
   var chatInput = document.getElementById('aiChatInput');
   if (chatInput) chatInput.addEventListener('keydown', function(e){
     if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault(); sendAiChatMessage();
+      e.preventDefault(); handleChatSendBtnClick();
     }
   });
 
@@ -1604,6 +1616,11 @@ async function initSidebar(){
   try { await loadPromptTemplates(); } catch(e){}
   try { onSidebarReady(); } catch(e){}
   try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){}
+  // AI Bar expanded by default
+  try {
+    var section = document.getElementById('aiSuggestionsSection');
+    if (section) section.classList.add('expanded');
+  } catch(e){}
 }
 
 if (typeof document !== 'undefined' && document.readyState === 'loading') {

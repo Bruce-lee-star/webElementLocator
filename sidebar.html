@@ -454,51 +454,38 @@
             <i data-lucide="brain-circuit" class="section-icon ai-brain-icon"></i>
             AI Bar
           </h4>
-          <div class="ai-provider-indicator">
-            <span id="aiToolNameInSection" class="ai-tool-badge">No AI Selected</span>
-          </div>
         </div>
         <div class="ai-header-right">
+          <select id="promptTemplateSelect" class="header-prompt-select">
+            <option value="">--- Default ---</option>
+            <option value="__manage_prompt__">—— Manage Prompt Templates ——</option>
+          </select>
           <button id="askAiBtn" class="ask-ai-btn">
             <i data-lucide="sparkles" class="btn-icon"></i>
             Ask
           </button>
-          <button id="aiChatOpenBtn" class="ask-ai-btn" title="Open AI Chat">
-            <i data-lucide="message-circle" class="btn-icon"></i>
-            Chat
-          </button>
         </div>
       </div>
 
-      <!-- Prompt Template Selector -->
-      <div id="aiBarToolSelector" class="ai-bar-tool-selector">
-        <div class="tool-selector-row">
-          <label class="tool-selector-label" title="Select a prompt template for AI analysis">
-            <i data-lucide="file-text" class="label-icon"></i>Prompt
-          </label>
-          <select id="promptTemplateSelect" class="tool-selector-dropdown">
-            <option value="">--- Default ---</option>
-            <option value="__manage_prompt__">—— Manage Prompt Templates ——</option>
-          </select>
-        </div>
-      </div>
-
-
-
-      <!-- AI Suggestions / Chat Messages Container -->
+      <!-- AI Suggestions Container -->
       <div id="aiSuggestions" class="ai-suggestions-container">
         <!-- AI suggestions will be populated here -->
       </div>
-      <div id="aiChatMessages" class="chat-messages-container" style="display: none;">
-        <!-- Chat messages will appear here -->
-      </div>
 
-      <!-- Always-visible Chat Input Area (bottom of AI Bar) -->
+      <!-- Always-visible Input Area (bottom of AI Bar) -->
       <div id="aiChatInputArea" class="ai-chat-input-bar">
         <textarea id="aiChatInput" class="chat-input-inline" placeholder="Ask AI about locators..." rows="1"></textarea>
-        <button id="aiChatSendBtn" class="chat-send-btn" title="Send">
-          <i data-lucide="send" class="btn-icon"></i>
-        </button>
+        <div class="ai-chat-input-toolbar">
+          <div class="toolbar-left">
+            <span id="aiToolBadgeInBar" class="toolbar-pill">No AI Selected</span>
+            <span id="aiModelBadgeInBar" class="toolbar-pill toolbar-pill-model">—</span>
+          </div>
+          <div class="toolbar-right">
+            <button id="aiChatSendBtn" class="chat-send-btn" title="Send">
+              <i data-lucide="send" class="btn-icon"></i>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
 

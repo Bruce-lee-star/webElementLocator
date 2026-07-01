@@ -172,12 +172,15 @@ async function callAiOptimalLocator(payload, config, tabId) {
     const systemPromptOverride = payload && payload.systemPrompt;
     const elemCount = (elements && elements.length) || 1;
 
-    const baseSystemPrompt = systemPromptOverride || 'You are a senior web test automation engineer. For each selected element, return its most robust CSS selector and XPath. Each element comes with: its own tag/attributes, an ancestor chain (parent→grandparent...), sibling context, and the page snapshot. Use ancestor IDs/roles to build scoped selectors like "#form [name=email]" — NOT just "#email". Reasoning process: (1) Check if element has unique id/data-testid → use it. (2) If not, look at ancestor chain for a unique parent with id/role/data-testid → scope selector under that parent. (3) Use sibling context to understand if the element is part of a list. (4) Prefer attribute-based (name, type, aria-label, placeholder) over class or text. Respond in JSON only: {"elements":[{"index":<idx>,"css":<string|null>,"css_confidence":<0-100>,"xpath":<string|null>,"xpath_confidence":<0-100>,"why":<short>,"alternatives":[{"kind":"css|xpath","value":"...","reason":"..."}]}],"general_notes":[...]} Confidence: id=100, data-testid=95, aria-label=90, name+type=90, placeholder=85, scoped-under-parent-id=85, class=70, text=65, nth-child=40.';
+    const baseSystemPrompt = systemPromptOverride || 'You are a web test automation engineer. Output ONLY valid JSON, no markdown.\n' +
+      'Rules: prefer id/data-testid > aria-label > name+type > placeholder > scoped-under-parent-id > class > text > nth-child.\n' +
+      'Format: {"elements":[{"index":0,"css":"selector","css_confidence":95,"xpath":"//xpath","xpath_confidence":90,"why":"explanation"}],"general_notes":["note"]}\n' +
+      'Be concise: short "why", skip alternatives unless needed.';
     const rulesSection = buildPromptRulesSection(promptRules);
     const systemPrompt = rulesSection ? baseSystemPrompt + '\n\n' + rulesSection : baseSystemPrompt;
 
     const userContent = [];
-    if (snapshot) userContent.push('=== PAGE STRUCTURE ===\n' + (typeof snapshot === 'string' ? snapshot.slice(0, 4000) : safeStringify(snapshot, 3).slice(0, 4000)));
+    if (snapshot) userContent.push('=== PAGE STRUCTURE ===\n' + (typeof snapshot === 'string' ? snapshot.slice(0, 2500) : safeStringify(snapshot, 3).slice(0, 2500)));
     if (elements && elements.length) userContent.push('=== SELECTED ELEMENTS (their outerHTML) ===\n' + safeStringify(elements, 2));
     if (userPrompt) userContent.push('=== USER INSTRUCTION ===\n' + userPrompt);
     const fullUser = userContent.join('\n\n');
@@ -196,7 +199,8 @@ async function callAiOptimalLocator(payload, config, tabId) {
     if (provider === 'gemini') {
         fetchUrl = apiUrl + (apiUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(token);
         body = JSON.stringify({
-            contents: [{ role: 'user', parts: [{ text: systemPrompt }, { text: '\n\n' + fullUser + '\n\nRespond with valid JSON ONLY. No markdown, no explanation.' }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents: [{ role: 'user', parts: [{ text: fullUser + '\n\nRespond with valid JSON ONLY. No markdown, no explanation.' }] }],
             generationConfig: { temperature: 0.1, responseMimeType: 'application/json' }
         });
     } else if (provider === 'claude') {
@@ -204,7 +208,7 @@ async function callAiOptimalLocator(payload, config, tabId) {
         headers['anthropic-version'] = '2023-06-01';
         body = JSON.stringify({
             model: model,
-            max_tokens: 1000 + elemCount * 1500,
+            max_tokens: 500 + elemCount * 600,
             system: systemPrompt,
             messages: [{ role: 'user', content: fullUser + '\n\nRespond with valid JSON ONLY. No markdown.' }]
         });
@@ -214,13 +218,14 @@ async function callAiOptimalLocator(payload, config, tabId) {
             model: model,
             messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: fullUser + '\n\nRespond with valid JSON ONLY. No markdown.' }],
             temperature: 0.1,
-            max_tokens: 1000 + elemCount * 1500
+            max_tokens: 500 + elemCount * 600,
+            stream: false
         });
     }
 
     // -- AbortController with timeout + cancellation support --
     const controller = new AbortController();
-    const timeoutMs = 90000 + elemCount * 60000; // 1元素=2.5分, 4元素=5.5分
+    const timeoutMs = 120000 + elemCount * 90000; // 1元素=3.5分, 4元素=8分
     const timeoutId = setTimeout(function(){ controller.abort('AI request timed out after ' + (timeoutMs / 1000) + 's'); }, timeoutMs);
     if (tabId != null) { activeAiRequests.set(tabId, controller); }
 
@@ -323,7 +328,10 @@ async function handleWriteConfigFile(request, sendResponse) {
         await chrome.storage.local.set({
             aiConfigs: config.aiConfigs || {},
             currentProvider: config.currentProvider || 'chatgpt',
-            customProviders: config.customProviders || []
+            customProviders: config.customProviders || [],
+            promptRules: config.promptRules || null,
+            customPromptTemplates: config.customPromptTemplates || [],
+            selectedPromptTemplateId: config.selectedPromptTemplateId || ''
         });
         // Write to config.json in extension directory (works for unpacked extensions)
         try {
@@ -368,6 +376,7 @@ async function handleChatAiRequest(request, sender, sendResponse) {
         const model = d.modelName || cfg.model;
         const apiUrl = cfg.url || '';
         const token = cfg.token || '';
+        const sysPrompt = d.systemPrompt || 'You are a helpful web automation assistant. Answer concisely.';
         if (!token) throw new Error('No API token');
         if (!apiUrl) throw new Error('No API URL');
 
@@ -375,14 +384,14 @@ async function handleChatAiRequest(request, sender, sendResponse) {
         let fetchUrl = apiUrl, body;
         if (provider === 'gemini') {
             fetchUrl = apiUrl + (apiUrl.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(token);
-            body = JSON.stringify({ contents: [{ role: 'user', parts: [{ text: d.message || '' }] }], generationConfig: { temperature: 0.2 } });
+            body = JSON.stringify({ contents: [{ role: 'user', parts: [{ text: d.message || '' }] }], systemInstruction: { parts: [{ text: sysPrompt }] }, generationConfig: { temperature: 0.2 } });
         } else if (provider === 'claude') {
             headers['x-api-key'] = token;
             headers['anthropic-version'] = '2023-06-01';
-            body = JSON.stringify({ model: model, max_tokens: 1500, system: 'You are a helpful web automation assistant. Answer concisely.', messages: [{ role: 'user', content: d.message || '' }] });
+            body = JSON.stringify({ model: model, max_tokens: 1500, system: sysPrompt, messages: [{ role: 'user', content: d.message || '' }] });
         } else {
             headers['Authorization'] = 'Bearer ' + token;
-            body = JSON.stringify({ model: model, messages: [{ role: 'system', content: 'You are a helpful web automation assistant. Answer concisely.' }, { role: 'user', content: d.message || '' }], temperature: 0.2 });
+            body = JSON.stringify({ model: model, messages: [{ role: 'system', content: sysPrompt }, { role: 'user', content: d.message || '' }], temperature: 0.2, stream: false });
         }
         const controller = new AbortController();
         const timeoutId = setTimeout(function(){ controller.abort('Chat AI request timed out after 180s'); }, 180000);
