@@ -20,6 +20,7 @@ var PROMPT_TEMPLATE_DIR = 'templates';
 var PROMPT_TEMPLATE_FILE = 'templates/templates.json';
 var CONFIG_FILE = 'config.json';
 var fileConfig = null;
+var pendingAiLoadId = null;
 
 function escapeForCode(s) {
   return String(s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -491,7 +492,9 @@ async function askAiForAllLocators(){
       capturedElements.forEach(function(el){ el.ai = { error: err }; });
     }
   } catch(e){
-    capturedElements.forEach(function(el){ el.ai = { error: String(e.message || e) }; });
+    var isAborted = (e && e.name === 'AbortError') || (e && typeof e.message === 'string' && (e.message.indexOf('aborted') !== -1 || e.message.indexOf('AbortError') !== -1));
+    var errMsg = isAborted ? 'Request cancelled by user' : String(e.message || e);
+    capturedElements.forEach(function(el){ el.ai = { error: errMsg }; });
   }
 
   removeChatLoadingIndicator(loadId);
@@ -1340,7 +1343,8 @@ async function sendAiChatMessage(){
     }
   } catch(e){
     removeChatLoadingIndicator(loadId);
-    appendChatBubble('ai', 'Error: ' + String(e.message || e));
+    var isAborted = (e && e.name === 'AbortError') || (e && typeof e.message === 'string' && (e.message.indexOf('aborted') !== -1 || e.message.indexOf('AbortError') !== -1));
+    appendChatBubble('ai', isAborted ? 'Request cancelled' : ('Error: ' + String(e.message || e)));
   }
 
   if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
@@ -1368,14 +1372,45 @@ function addChatLoadingIndicator(text){
   var id = 'chat_load_' + Date.now();
   bubble.id = id;
   msgs.appendChild(bubble);
+
+  // Add stop button
+  var stopBtn = document.createElement('button');
+  stopBtn.className = 'chat-loading-stop-btn';
+  stopBtn.textContent = '✕ Stop';
+  stopBtn.title = 'Cancel AI request';
+  stopBtn.addEventListener('click', function(e){
+    e.stopPropagation();
+    cancelCurrentAiRequest();
+  });
+  bubble.appendChild(stopBtn);
+
   msgs.scrollTop = msgs.scrollHeight;
+  pendingAiLoadId = id;
   return id;
 }
 
 function removeChatLoadingIndicator(id){
   if (!id) return;
+  if (pendingAiLoadId === id) pendingAiLoadId = null;
   var el = document.getElementById(id);
   if (el) el.remove();
+}
+
+function cancelCurrentAiRequest(){
+  var loadId = pendingAiLoadId;
+  if (loadId) removeChatLoadingIndicator(loadId);
+  pendingAiLoadId = null;
+
+  // Reset Ask AI button
+  var askBtn = document.getElementById('askAiBtn');
+  if (askBtn) { askBtn.disabled = false; askBtn.textContent = 'Ask'; }
+
+  // Reset chat send button
+  var sendBtn = document.getElementById('aiChatSendBtn');
+  if (sendBtn) { sendBtn.disabled = false; sendBtn.innerHTML = '<i data-lucide="send" class="btn-icon"></i>'; try { if (window.lucide && window.lucide.createIcons) window.lucide.createIcons(); } catch(e){} }
+
+  // Send cancel to background
+  sendRuntimeMessage({ type: 'CANCEL_AI_REQUESTS' }).catch(function(){});
 }
 
 /* ===================== Init ===================== */
