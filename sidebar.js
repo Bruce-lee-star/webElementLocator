@@ -18,6 +18,8 @@ var DEFAULT_SYSTEM_PROMPT = 'You are a senior web test automation engineer. For 
 
 var PROMPT_TEMPLATE_DIR = 'templates';
 var PROMPT_TEMPLATE_FILE = 'templates/templates.json';
+var CONFIG_FILE = 'config.json';
+var fileConfig = null;
 
 function escapeForCode(s) {
   return String(s || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -87,11 +89,31 @@ function setStorage(obj){
   });
 }
 
-async function getAiConfig(){
-  var configs = await getStorage('aiConfigs');
+async function loadConfigFromFile() {
+  // Read config.json from extension root — primary source of truth
+  try {
+    var url = chrome.runtime.getURL(CONFIG_FILE);
+    var resp = await fetch(url);
+    if (resp.ok) {
+      fileConfig = await resp.json();
+      if (!fileConfig.aiConfigs) fileConfig.aiConfigs = {};
+      if (!fileConfig.currentProvider) fileConfig.currentProvider = 'chatgpt';
+      if (!fileConfig.customProviders) fileConfig.customProviders = [];
+      // Sync to storage so background.js can access it
+      await setStorage({
+        aiConfigs: fileConfig.aiConfigs,
+        currentProvider: fileConfig.currentProvider,
+        customProviders: fileConfig.customProviders
+      });
+      return;
+    }
+  } catch(e) { /* config.json not found or invalid, fall back to storage */ }
+
+  // Fallback: load from chrome.storage.local
+  var configs = await getStorage('aiConfigs') || {};
   var current = await getStorage('currentProvider');
   // Migrate old single-provider format
-  if (!configs) {
+  if (!current && Object.keys(configs).length === 0) {
     var oldCfg = await getStorage('aiConfig');
     if (oldCfg && oldCfg.provider) {
       configs = {};
@@ -102,13 +124,35 @@ async function getAiConfig(){
         enabled: oldCfg.enabled !== false
       };
       current = oldCfg.provider;
-      await setStorage({ aiConfigs: configs, currentProvider: current });
-    } else {
-      configs = {};
-      current = 'chatgpt';
     }
   }
-  var providerId = current || 'chatgpt';
+  var customProvidersArr = await getStorage('customProviders') || [];
+  fileConfig = {
+    aiConfigs: configs,
+    currentProvider: current || 'chatgpt',
+    customProviders: customProvidersArr
+  };
+}
+
+async function saveFileConfig() {
+  if (!fileConfig) return;
+  fileConfig.updatedAt = new Date().toISOString();
+  // Sync to storage for background.js runtime access
+  await setStorage({
+    aiConfigs: fileConfig.aiConfigs || {},
+    currentProvider: fileConfig.currentProvider || 'chatgpt',
+    customProviders: fileConfig.customProviders || []
+  });
+  // Write to config.json via background service worker
+  try {
+    await sendRuntimeMessage({ type: 'WRITE_CONFIG_FILE', data: fileConfig });
+  } catch(e) { /* background write failed, storage persisted */ }
+}
+
+async function getAiConfig(){
+  if (!fileConfig) await loadConfigFromFile();
+  var configs = fileConfig.aiConfigs || {};
+  var providerId = fileConfig.currentProvider || 'chatgpt';
   var saved = configs[providerId] || {};
   var presets = PROVIDER_PRESETS[providerId] || {};
   var custom = null;
@@ -125,13 +169,15 @@ async function getAiConfig(){
 }
 
 async function saveAiConfig(cfg){
-  var configs = await getStorage('aiConfigs') || {};
-  if (!configs[cfg.provider]) configs[cfg.provider] = {};
-  configs[cfg.provider].token = cfg.token || '';
-  configs[cfg.provider].model = cfg.model || '';
-  configs[cfg.provider].url = cfg.url || '';
-  configs[cfg.provider].enabled = cfg.enabled !== false;
-  await setStorage({ aiConfigs: configs, currentProvider: cfg.provider });
+  if (!fileConfig) await loadConfigFromFile();
+  if (!fileConfig.aiConfigs) fileConfig.aiConfigs = {};
+  if (!fileConfig.aiConfigs[cfg.provider]) fileConfig.aiConfigs[cfg.provider] = {};
+  fileConfig.aiConfigs[cfg.provider].token = cfg.token || '';
+  fileConfig.aiConfigs[cfg.provider].model = cfg.model || '';
+  fileConfig.aiConfigs[cfg.provider].url = cfg.url || '';
+  fileConfig.aiConfigs[cfg.provider].enabled = cfg.enabled !== false;
+  fileConfig.currentProvider = cfg.provider;
+  await saveFileConfig();
 }
 
 function clearCapturedElements(){
@@ -549,8 +595,7 @@ function switchConfigTab(tabId){
 
 async function loadAiConfigForm(){
   var cfg = await getAiConfig();
-  var custom = await getStorage('customProviders');
-  if (Array.isArray(custom)) customProviders = custom;
+  customProviders = fileConfig && fileConfig.customProviders ? fileConfig.customProviders : [];
 
   // Master toggle
   var enableCb = document.getElementById('enableAiFeatures');
@@ -688,7 +733,9 @@ function renderCustomProvidersList(selectedProvider){
 async function deleteCustomProvider(id){
   if (!confirm('Delete this custom provider? This cannot be undone.')) return;
   customProviders = customProviders.filter(function(cp){ return cp.id !== id; });
-  await setStorage({ customProviders: customProviders });
+  if (!fileConfig) await loadConfigFromFile();
+  fileConfig.customProviders = customProviders;
+  await saveFileConfig();
   // If the deleted provider was currently selected, switch to default
   var cfg = await getAiConfig();
   if (cfg.provider === id) {
@@ -719,7 +766,7 @@ async function selectProvider(providerId){
     }
   }
   // Load saved config for new provider if exists
-  var configs = await getStorage('aiConfigs') || {};
+  var configs = (fileConfig && fileConfig.aiConfigs) || {};
   if (configs[providerId]) {
     cfg.token = configs[providerId].token || '';
     cfg.model = configs[providerId].model || cfg.model;
@@ -785,7 +832,9 @@ async function saveCustomProvider(){
   var entry = { id: id, name: name, url: url, model: model, token: token };
   if (existingIdx >= 0) customProviders[existingIdx] = entry;
   else customProviders.push(entry);
-  await setStorage({ customProviders: customProviders });
+  if (!fileConfig) await loadConfigFromFile();
+  fileConfig.customProviders = customProviders;
+  await saveFileConfig();
 
   // Also auto-select
   await selectProvider(id);
@@ -868,11 +917,10 @@ async function toggleMasterAi(){
 }
 
 async function exportAiConfigs(){
-  var configs = await getStorage('aiConfigs') || {};
-  var custom = await getStorage('customProviders') || [];
+  if (!fileConfig) await loadConfigFromFile();
   var obj = {
-    aiConfigs: configs,
-    customProviders: custom,
+    aiConfigs: fileConfig.aiConfigs || {},
+    customProviders: fileConfig.customProviders || [],
     exportedAt: new Date().toISOString(),
     version: '1.0'
   };
@@ -892,8 +940,10 @@ async function importAiConfigs(file){
     try {
       var obj = JSON.parse(e.target.result);
       if (!obj || !obj.aiConfigs) return showToast('Invalid config file');
-      await setStorage({ aiConfigs: obj.aiConfigs });
-      if (obj.customProviders) await setStorage({ customProviders: obj.customProviders });
+      if (!fileConfig) await loadConfigFromFile();
+      fileConfig.aiConfigs = obj.aiConfigs;
+      fileConfig.customProviders = obj.customProviders || [];
+      await saveFileConfig();
       showToast('Config imported');
       await loadAiConfigForm();
       updateAiProviderUi();
@@ -1481,6 +1531,7 @@ function setupEventListeners(){
 }
 
 async function initSidebar(){
+  try { await loadConfigFromFile(); } catch(e){}
   try { setupEventListeners(); } catch(e){ console.error('setupEventListeners error', e); }
   try { await updateAiProviderUi(); } catch(e){}
   try { updateCapturedElementsList(); } catch(e){}

@@ -39,7 +39,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sidebar.html", "sidebar.css", "sidebar.js", "lucide.js","error_handling_utils.js", "templates/*"],
+      "resources": ["sidebar.html", "sidebar.css", "sidebar.js", "lucide.js","error_handling_utils.js", "templates/*", "config.json"],
       "matches": ["<all_urls>"]
     }
   ],

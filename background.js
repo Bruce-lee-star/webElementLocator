@@ -316,6 +316,39 @@ async function handleTestAiConnection(request, sender, sendResponse) {
     }
 }
 
+async function handleWriteConfigFile(request, sendResponse) {
+    const config = request.data;
+    try {
+        // Always persist to chrome.storage.local for runtime access
+        await chrome.storage.local.set({
+            aiConfigs: config.aiConfigs || {},
+            currentProvider: config.currentProvider || 'chatgpt',
+            customProviders: config.customProviders || []
+        });
+        // Write to config.json in extension directory (works for unpacked extensions)
+        try {
+            await new Promise(function(resolve, reject) {
+                chrome.runtime.getPackageDirectoryEntry(function(rootDir) {
+                    rootDir.getFile('config.json', { create: true }, function(fileEntry) {
+                        fileEntry.createWriter(function(writer) {
+                            writer.onwriteend = resolve;
+                            writer.onerror = reject;
+                            var blob = new Blob([JSON.stringify(config, null, 2)], { type: 'application/json' });
+                            writer.write(blob);
+                        }, reject);
+                    }, reject);
+                });
+            });
+        } catch (fileErr) {
+            // File write failed — config is still persisted in storage
+            console.warn('config.json write skipped (file system unavailable):', fileErr);
+        }
+        try { sendResponse({ ok: true }); } catch (e) {}
+    } catch (err) {
+        try { sendResponse({ ok: false, error: String(err && err.message || err) }); } catch (e) {}
+    }
+}
+
 async function handleAiSuggestionsRequest(request, sender, sendResponse) {
     try {
         const d = request.data || {};
@@ -509,6 +542,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (type === "REQUEST_AI_SUGGESTIONS") { handleAiSuggestionsRequest(request, sender, sendResponse); return true; }
         if (type === "REQUEST_CHAT_AI") { handleChatAiRequest(request, sender, sendResponse); return true; }
         if (type === "TEST_AI_CONNECTION") { handleTestAiConnection(request, sender, sendResponse); return true; }
+        if (type === "WRITE_CONFIG_FILE") { handleWriteConfigFile(request, sendResponse); return true; }
         if (type === "PING") { try { sendResponse && sendResponse({status: "pong"}); } catch (e) {} return false; }
         if (type === "SET_SIDEBAR_EXPLICITLY_CLOSED") { try { chrome.storage.local.set({isSidebarExplicitlyClosed: request.isClosed}, () => { try { void chrome.runtime.lastError; } catch (e) {} }); } catch (e) {} try { sendResponse && sendResponse({ ok: true }); } catch (e) {} return false; }
         if (type === "CANCEL_AI_REQUESTS") { try { cancelActiveAiRequests(sender.tab && sender.tab.id); } catch (e) {} try { sendResponse && sendResponse({ ok: true }); } catch (e) {} return false; }
