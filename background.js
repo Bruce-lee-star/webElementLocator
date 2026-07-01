@@ -221,7 +221,7 @@ async function callAiOptimalLocator(payload, config, tabId) {
     // -- AbortController with timeout + cancellation support --
     const controller = new AbortController();
     const timeoutMs = 90000 + elemCount * 60000; // 1元素=2.5分, 4元素=5.5分
-    const timeoutId = setTimeout(function(){ controller.abort(); }, timeoutMs);
+    const timeoutId = setTimeout(function(){ controller.abort('AI request timed out after ' + (timeoutMs / 1000) + 's'); }, timeoutMs);
     if (tabId != null) { activeAiRequests.set(tabId, controller); }
 
     let resp;
@@ -325,7 +325,7 @@ async function handleChatAiRequest(request, sender, sendResponse) {
             body = JSON.stringify({ model: model, messages: [{ role: 'system', content: 'You are a helpful web automation assistant. Answer concisely.' }, { role: 'user', content: d.message || '' }], temperature: 0.2 });
         }
         const controller = new AbortController();
-        const timeoutId = setTimeout(function(){ controller.abort(); }, 180000);
+        const timeoutId = setTimeout(function(){ controller.abort('Chat AI request timed out after 180s'); }, 180000);
         const tabId = sender && sender.tab && sender.tab.id;
         if (tabId != null) { activeAiRequests.set(tabId, controller); }
 
@@ -479,7 +479,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return true;
         }
 
-        if (type === "REQUEST_AI_SUGGESTIONS") { handleAiSuggestionsRequest(request, sender, sendResponse); return false; }
+        if (type === "REQUEST_AI_SUGGESTIONS") { handleAiSuggestionsRequest(request, sender, sendResponse); return true; }
         if (type === "REQUEST_CHAT_AI") { handleChatAiRequest(request, sender, sendResponse); return true; }
         if (type === "TEST_AI_CONNECTION") { handleTestAiConnection(request, sender, sendResponse); return true; }
         if (type === "PING") { try { sendResponse && sendResponse({status: "pong"}); } catch (e) {} return false; }

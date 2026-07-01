@@ -321,37 +321,49 @@ async function autoValidateLocators(bubble) {
   }
 }
 
+function formatElementsForUserMessage(){
+  var lines = [];
+  capturedElements.forEach(function(el, idx){
+    var desc = '<' + (el.tagName || '?') + '>';
+    if (el.text && el.text.trim()) desc += ' "' + el.text.trim().slice(0, 60) + '"';
+    if (el.id) desc += ' #' + el.id;
+    if (el.className && typeof el.className === 'string') desc += ' .' + el.className.split(' ').slice(0, 2).join('.');
+    var name = suggestVariableName(el, idx);
+    lines.push('Element ' + (idx + 1) + ': ' + desc + '  (' + name + ')');
+    var html = (el.elementHTML || el.outerHTML || el.preview || '').trim();
+    if (html) lines.push('```html\n' + html.slice(0, 600) + '\n```');
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
 function formatAiResultsForChat(thinking){
   var lines = [];
   if (thinking && thinking.trim()) {
-    lines.push('');
     lines.push(thinking.trim());
     lines.push('');
-    lines.push('--- Final Results ---');
-    lines.push('');
   }
-  lines.push('Analyzed ' + capturedElements.length + ' element(s):\n');
   capturedElements.forEach(function(el, idx){
     var name = suggestVariableName(el, idx);
     var desc = '<' + (el.tagName || '?') + '>';
     if (el.text && el.text.trim()) desc += ' "' + el.text.trim().slice(0, 40) + '"';
-    lines.push('—— Element ' + (idx + 1) + ': ' + desc + ' (' + name + ') ——');
+    lines.push('### ' + (idx + 1) + '. ' + desc + '  (' + name + ')');
     if (!el.ai || el.ai.error) {
-      lines.push('  ❌ ' + (el.ai && el.ai.error ? el.ai.error : 'No locator'));
+      lines.push('❌ ' + (el.ai && el.ai.error ? el.ai.error : 'No locator'));
     } else {
       if (el.ai.css && el.ai.css.recommendation) {
-        lines.push('  CSS:  ' + el.ai.css.recommendation + (el.ai.css.confidence ? '  (' + el.ai.css.confidence + '%)' : ''));
+        lines.push('`' + el.ai.css.recommendation + '`' + (el.ai.css.confidence ? '  (' + el.ai.css.confidence + '%)' : ''));
       }
       if (el.ai.xpath && el.ai.xpath.recommendation) {
-        lines.push('  XPATH: ' + el.ai.xpath.recommendation + (el.ai.xpath.confidence ? '  (' + el.ai.xpath.confidence + '%)' : ''));
+        lines.push('`' + el.ai.xpath.recommendation + '`' + (el.ai.xpath.confidence ? '  (' + el.ai.xpath.confidence + '%)' : ''));
       }
       if (el.ai.rationale) {
-        lines.push('  💡 ' + el.ai.rationale);
+        lines.push('💡 ' + el.ai.rationale);
       }
       if (el.ai.alternatives && el.ai.alternatives.length) {
-        lines.push('  Alternatives:');
+        lines.push('🔹 Alternatives:');
         el.ai.alternatives.forEach(function(a){
-          lines.push('    ' + (a.kind || 'css').toUpperCase() + ': ' + a.value);
+          lines.push('  · `' + a.value + '`');
         });
       }
     }
@@ -363,15 +375,28 @@ function formatAiResultsForChat(thinking){
 async function askAiForAllLocators(){
   if (!capturedElements || capturedElements.length === 0) return;
   var btn = document.getElementById('askAiBtn');
-  if (btn) { btn.disabled = true; btn.textContent = 'Analyzing...'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'Asking...'; }
 
-  // Auto-expand AI bar and open chat so user sees results immediately
+  // Read user prompt from input field
+  var promptInput = document.getElementById('aiUserPrompt');
+  var userPrompt = promptInput ? (promptInput.value || '').trim() : '';
+  if (promptInput) promptInput.value = '';
+
+  // Auto-expand AI bar and open chat
   var section = document.getElementById('aiSuggestionsSection');
   if (section) section.classList.add('expanded');
   if (!chatOpen) openAiChat();
-  var loadId = addChatLoadingIndicator('Analyzing ' + capturedElements.length + ' element(s)...');
 
-  var userPrompt = '';
+  // Build user message: elements + prompt
+  var userMsg = 'Generate reliable CSS selectors and XPath locators for the following elements:\n\n';
+  userMsg += formatElementsForUserMessage();
+  if (userPrompt) {
+    userMsg += '\n--- Additional Instruction ---\n' + userPrompt;
+  }
+  appendChatBubble('user', userMsg);
+
+  var loadId = addChatLoadingIndicator();
+
   var elementsForAI = capturedElements.map(function(el, idx){
     var item = {
       idx: idx,
@@ -385,15 +410,16 @@ async function askAiForAllLocators(){
       siblingContext: el.siblingContext || null,
       locators: el.locators || null
     };
-    // Include AXTree semantic data if available (anti-NLS enrichment)
     if (el.axtree) {
       item.axtree = el.axtree;
     }
     return item;
   });
+
+  var resp;
   try {
     var activeSystemPrompt = getActiveSystemPrompt();
-    var resp = await requestOptimalLocatorsBatch(elementsForAI, userPrompt, activeSystemPrompt);
+    resp = await requestOptimalLocatorsBatch(elementsForAI, userPrompt, activeSystemPrompt);
     if (resp && resp.ok && resp.result && resp.result.elements) {
       var results = resp.result.elements;
       results.forEach(function(r){
@@ -414,13 +440,20 @@ async function askAiForAllLocators(){
   } catch(e){
     capturedElements.forEach(function(el){ el.ai = { error: String(e.message || e) }; });
   }
-  // Show results in chat
+
   removeChatLoadingIndicator(loadId);
+
+  // Show results in chat
   var thinking = (resp && resp.result && resp.result.thinking) || '';
-  var chatText = formatAiResultsForChat(thinking);
+  var hasAnyError = capturedElements.some(function(el){ return el.ai && el.ai.error; });
+  var chatText;
+  if (hasAnyError && !thinking) {
+    chatText = '❌ ' + (resp && resp.error ? resp.error : 'AI request failed');
+  } else {
+    chatText = formatAiResultsForChat(thinking);
+  }
   var bubble = appendChatBubble('ai', chatText);
 
-  // Auto-validate: test AI locators in the page and show match count
   autoValidateLocators(bubble);
   
   updateCapturedElementsList();
