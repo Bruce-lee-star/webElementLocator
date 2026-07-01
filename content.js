@@ -1656,9 +1656,19 @@
             if (v) keyAttrs[a] = v;
         });
 
-        // Try local heuristic locator generation (no AI needed for clear identifiers)
+        // Try local locator generation (instant, no AI needed) — single unique locator, CSS priority
         var localHeuristic = null;
-        try { localHeuristic = (typeof generateLocalHeuristicLocators === 'function') ? generateLocalHeuristicLocators(element) : null; } catch(e) {}
+        try {
+            if (typeof generatePlaywrightStyleLocators === 'function') {
+                var pwResult = generatePlaywrightStyleLocators(element);
+                if (pwResult && pwResult.locator) {
+                    localHeuristic = { css: pwResult.type === 'css' ? pwResult.locator : null, xpath: pwResult.type === 'xpath' ? pwResult.locator : null, method: pwResult.method, type: pwResult.type };
+                }
+            }
+            if (!localHeuristic && typeof generateLocalHeuristicLocators === 'function') {
+                localHeuristic = generateLocalHeuristicLocators(element);
+            }
+        } catch(e) {}
 
         var elementData = {
             tag: element.tagName.toLowerCase(),
@@ -1674,7 +1684,7 @@
             href: element.getAttribute('href') || '',
             outerHTML: outerHTML,
             locators,
-            localHeuristic: localHeuristic,   // Locally generated locator (no AI needed)
+            localHeuristic: localHeuristic,   // Single unique locally generated locator (CSS priority, no AI needed)
             timestamp: new Date().toLocaleString(),
             elementType: locatorGenerator.detectElementType(element),
             pageUrl: window.location.href,
@@ -1695,22 +1705,29 @@
         sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: elementHistory });
         removeHighlight();
 
-        // Request AXTree semantic enrichment (chrome.automation) for anti-NLS locators
+        // Enrich element with semantic DOM attributes (AXTree replacement for MV3)
         (function(){
             try {
-                var rect = element.getBoundingClientRect();
-                safeRuntimeSendMessage({
-                    type: 'REQUEST_AXTREE_NODE',
-                    data: { rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height } }
-                }, function(response) {
-                    if (response && response.ok && response.node) {
-                        var lastEl = elementHistory[elementHistory.length - 1];
-                        if (lastEl) {
-                            lastEl.axtree = response.node;
-                            sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: elementHistory });
-                        }
+                var axtree = {};
+                var role = element.getAttribute('role') || element.getAttribute('aria-role') || '';
+                if (role) axtree.role = role;
+                var ariaLabel = element.getAttribute('aria-label') || '';
+                if (ariaLabel) axtree.label = ariaLabel;
+                var ariaDesc = element.getAttribute('aria-describedby') || '';
+                if (ariaDesc) axtree.describedby = ariaDesc;
+                var dataI18n = element.getAttribute('data-i18n-key') || element.getAttribute('data-i18n-id') || element.getAttribute('data-i18n') || '';
+                if (dataI18n) axtree['data-i18n-key'] = dataI18n;
+                var dataTestid = element.getAttribute('data-testid') || element.getAttribute('data-test') || element.getAttribute('data-cy') || element.getAttribute('data-qa') || '';
+                if (dataTestid) axtree['data-testid'] = dataTestid;
+                var accName = element.getAttribute('aria-label') || element.getAttribute('aria-labelledby') || '';
+                if (accName && !axtree.label) axtree.label = accName;
+                if (Object.keys(axtree).length) {
+                    var lastEl = elementHistory[elementHistory.length - 1];
+                    if (lastEl) {
+                        lastEl.axtree = axtree;
+                        sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: elementHistory });
                     }
-                });
+                }
             } catch(e) {}
         })();
     }
@@ -1868,72 +1885,213 @@
         } catch(e) { return null; }
     }
 
-    // Local heuristic locator generation — no AI needed for elements with clear identifiers.
-    // Returns { css: string, xpath: string, confidence: number, method: string } or null.
-    function generateLocalHeuristicLocators(element) {
+    // ── Local locator generator ─────────────────────────────────────────────────────
+    // Generates a SINGLE unique locator. CSS first, XPath fallback.
+    // No absolute XPath, no scores, no random/auto-generated attribute usage.
+    // Returns { locator: string, type: 'css'|'xpath', method: string } or null.
+    function generatePlaywrightStyleLocators(element) {
+        // Generates a SINGLE unique locator for the given element.
+        // CSS is prioritized; XPath is used only when CSS can't produce a unique result.
+        // No absolute XPath, no scores, no random/auto-generated attribute usage.
         try {
             var tag = element.tagName.toLowerCase();
+
+            function esc(s) { try { return CSS.escape(s); } catch(e) { return s.replace(/"/g,'\\"'); } }
+            function xpEsc(s) { return s.replace(/'/g, "&apos;").replace(/"/g, '&quot;'); }
+
+            function qsaCount(sel) { try { return document.querySelectorAll(sel).length; } catch(e) { return 999; } }
+            function verifyCss(sel) {
+                try { var els = document.querySelectorAll(sel); return els.length === 1 && els[0].isSameNode(element); } catch(e) { return false; }
+            }
+            function verifyXp(xp) {
+                try { var r = document.evaluate(xp, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null); return r.singleNodeValue && r.singleNodeValue.isSameNode(element); } catch(e) { return false; }
+            }
+            function xpCount(xp) {
+                try { return document.evaluate('count(' + xp + ')', document, null, XPathResult.NUMBER_TYPE, null).numberValue; } catch(e) { return 999; }
+            }
+
+            // Try CSS selector: if unique and verified, return immediately.
+            // If count > 1, try parent-scoping up to 6 levels.
+            function tryCss(sel, method) {
+                var c = qsaCount(sel);
+                if (c === 1 && verifyCss(sel)) return { locator: sel, type: 'css', method: method };
+                if (c > 1) return scopeCss(sel, method);
+                return null;
+            }
+
+            function scopeCss(sel, method) {
+                var p = element.parentElement, d = 0;
+                while (p && p !== document.body && d < 6) {
+                    if (p.id) {
+                        var scoped = '#' + esc(p.id) + ' > ' + sel;
+                        if (qsaCount(scoped) === 1 && verifyCss(scoped)) return { locator: scoped, type: 'css', method: method + ' (#' + p.id + ' >)' };
+                        scoped = '#' + esc(p.id) + ' ' + sel;
+                        if (qsaCount(scoped) === 1 && verifyCss(scoped)) return { locator: scoped, type: 'css', method: method + ' (#' + p.id + ')' };
+                    }
+                    var pcls = (typeof p.className === 'string') ? p.className.trim().split(/\s+/).filter(function(c){ return c.length>0 && !/^\d/.test(c); }) : [];
+                    if (pcls.length === 1 && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(pcls[0])) {
+                        var sc2 = p.tagName.toLowerCase() + '.' + esc(pcls[0]) + ' > ' + sel;
+                        if (qsaCount(sc2) === 1 && verifyCss(sc2)) return { locator: sc2, type: 'css', method: method + ' (.' + pcls[0] + ' >)' };
+                        sc2 = p.tagName.toLowerCase() + '.' + esc(pcls[0]) + ' ' + sel;
+                        if (qsaCount(sc2) === 1 && verifyCss(sc2)) return { locator: sc2, type: 'css', method: method + ' (.' + pcls[0] + ')' };
+                    }
+                    p = p.parentElement;
+                    d++;
+                }
+                return null;
+            }
+
+            // Try XPath selector. If count > 1, try parent-scoping then position index.
+            // No absolute paths.
+            function tryXp(xp, method) {
+                var c = xpCount(xp);
+                if (c === 1 && verifyXp(xp)) return { locator: xp, type: 'xpath', method: method };
+                if (c > 1) {
+                    // Try parent-scoping
+                    var p = element.parentElement, d = 0;
+                    while (p && p !== document.body && d < 6) {
+                        if (p.id) {
+                            var scoped = '//*[@id="' + xpEsc(p.id) + '"]' + xp.substring(1);
+                            if (xpCount(scoped) === 1 && verifyXp(scoped)) return { locator: scoped, type: 'xpath', method: method + ' (#' + p.id + ')' };
+                        }
+                        var pcls = (typeof p.className === 'string') ? p.className.trim().split(/\s+/).filter(function(c){ return c.length>0 && !/^\d/.test(c); }) : [];
+                        if (pcls.length === 1 && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(pcls[0])) {
+                            var sc2 = '//' + p.tagName.toLowerCase() + '[contains(@class,"' + xpEsc(pcls[0]) + '")]' + xp.substring(1);
+                            if (xpCount(sc2) === 1 && verifyXp(sc2)) return { locator: sc2, type: 'xpath', method: method + ' (.' + pcls[0] + ')' };
+                        }
+                        p = p.parentElement;
+                        d++;
+                    }
+                    // Position index
+                    try {
+                        var snap = document.evaluate(xp, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        for (var i = 0; i < snap.snapshotLength; i++) {
+                            if (snap.snapshotItem(i).isSameNode(element)) {
+                                var indexed = '(' + xp + ')[' + (i + 1) + ']';
+                                if (verifyXp(indexed)) return { locator: indexed, type: 'xpath', method: method + '[' + (i + 1) + ']' };
+                            }
+                        }
+                    } catch(e) {}
+                }
+                return null;
+            }
+
+            // Detect auto-generated IDs (randomized / dynamic patterns)
+            function isAutoGeneratedId(id) {
+                if (!id) return true;
+                var len = id.length;
+                if (len > 50) return true;
+                if (/^[a-z]\d{3,}$/.test(id)) return true; // e.g. a1234
+                if (/^(ember|react|gwt|unique|view|ctrl|comp|__b_|jsx-|v-)[-]?\d/.test(id)) return true;
+                if (/[a-f0-9]{16,}/i.test(id)) return true; // hex hash
+                if (/[-_]{3,}/.test(id)) return true;
+                return false;
+            }
+
+            // ======== Priority-ordered attempt chain ========
+
+            // 1. data-testid
+            var testid = element.getAttribute('data-testid');
+            if (testid) {
+                var r = tryCss('[data-testid="' + esc(testid) + '"]', 'data-testid');
+                if (r) return r;
+                r = tryXp('//*[@data-testid="' + xpEsc(testid) + '"]', 'data-testid');
+                if (r) return r;
+            }
+
+            // 2. data-cy, data-test, data-qa
+            var testAttrs = ['data-cy', 'data-test', 'data-qa'];
+            for (var ta = 0; ta < testAttrs.length; ta++) {
+                var tv = element.getAttribute(testAttrs[ta]);
+                if (tv) {
+                    var r = tryCss('[' + testAttrs[ta] + '="' + esc(tv) + '"]', testAttrs[ta]);
+                    if (r) return r;
+                    r = tryXp('//*[@' + testAttrs[ta] + '="' + xpEsc(tv) + '"]', testAttrs[ta]);
+                    if (r) return r;
+                }
+            }
+
+            // 3. unique id (not auto-generated)
             var id = element.id;
-            var testId = element.getAttribute('data-testid') || element.getAttribute('data-cy') || element.getAttribute('data-test') || element.getAttribute('data-qa');
-            var name = element.getAttribute('name');
+            if (id && !isAutoGeneratedId(id)) {
+                var r = tryCss('#' + esc(id), 'id');
+                if (r) return r;
+                r = tryCss(tag + '#' + esc(id), 'tag+id');
+                if (r) return r;
+                r = tryXp('//*[@id="' + xpEsc(id) + '"]', 'id');
+                if (r) return r;
+            }
+
+            // 4. aria-label
             var ariaLabel = element.getAttribute('aria-label');
-            var placeholder = element.getAttribute('placeholder');
-            var type = element.getAttribute('type');
-
-            // Tier 1: data-testid (highest confidence — designed for testing)
-            if (testId) {
-                var css = '[data-testid="' + testId + '"]';
-                if (!element.getAttribute('data-testid')) {
-                    var attr = element.getAttribute('data-cy') ? 'data-cy' : element.getAttribute('data-test') ? 'data-test' : 'data-qa';
-                    css = '[' + attr + '="' + testId + '"]';
-                }
-                return { css: css, xpath: '//*[@data-testid="' + testId + '"]', confidence: 95, method: 'data-testid' };
-            }
-
-            // Tier 2: Unique ID
-            if (id) {
-                var count = document.querySelectorAll('#' + CSS.escape(id)).length;
-                if (count === 1) {
-                    return { css: '#' + CSS.escape(id), xpath: '//*[@id="' + id + '"]', confidence: 100, method: 'unique-id' };
-                }
-                // Non-unique ID — scope to tag
-                return { css: tag + '#' + CSS.escape(id), xpath: '//' + tag + '[@id="' + id + '"]', confidence: 70, method: 'scoped-id' };
-            }
-
-            // Tier 3: name + type combination (forms)
-            if (name && type) {
-                var count2 = document.querySelectorAll('[name="' + CSS.escape(name) + '"][type="' + type + '"]').length;
-                if (count2 === 1) {
-                    return { css: '[name="' + CSS.escape(name) + '"][type="' + type + '"]',
-                             xpath: '//' + tag + '[@name="' + name + '" and @type="' + type + '"]',
-                             confidence: 90, method: 'name+type' };
-                }
-            }
-            if (name) {
-                var count3 = document.querySelectorAll('[name="' + CSS.escape(name) + '"]').length;
-                if (count3 === 1) {
-                    return { css: '[name="' + CSS.escape(name) + '"]',
-                             xpath: '//*[@name="' + name + '"]',
-                             confidence: 85, method: 'unique-name' };
-                }
-            }
-
-            // Tier 4: aria-label
             if (ariaLabel) {
-                return { css: '[aria-label="' + ariaLabel.replace(/"/g, '\\"') + '"]',
-                         xpath: '//*[@aria-label="' + ariaLabel + '"]',
-                         confidence: 75, method: 'aria-label' };
+                var r = tryCss('[aria-label="' + ariaLabel.replace(/"/g,'\\"') + '"]', 'aria-label');
+                if (r) return r;
+                r = tryCss(tag + '[aria-label="' + ariaLabel.replace(/"/g,'\\"') + '"]', 'tag+aria-label');
+                if (r) return r;
+                r = tryXp('//*[@aria-label="' + xpEsc(ariaLabel) + '"]', 'aria-label');
+                if (r) return r;
             }
 
-            // Tier 5: placeholder
+            // 5. placeholder
+            var placeholder = element.getAttribute('placeholder');
             if (placeholder) {
-                return { css: '[placeholder="' + placeholder.replace(/"/g, '\\"') + '"]',
-                         xpath: '//*[@placeholder="' + placeholder + '"]',
-                         confidence: 70, method: 'placeholder' };
+                var r = tryCss(tag + '[placeholder="' + placeholder.replace(/"/g,'\\"') + '"]', 'placeholder');
+                if (r) return r;
+                r = tryXp('//' + tag + '[@placeholder="' + xpEsc(placeholder) + '"]', 'placeholder');
+                if (r) return r;
             }
 
-            return null; // Need AI for this element
+            // 6. name + type
+            var name = element.getAttribute('name');
+            var type = element.getAttribute('type');
+            if (name && type) {
+                var r = tryCss(tag + '[name="' + esc(name) + '"][type="' + type + '"]', 'name+type');
+                if (r) return r;
+                r = tryXp('//' + tag + '[@name="' + xpEsc(name) + '" and @type="' + type + '"]', 'name+type');
+                if (r) return r;
+            }
+
+            // 7. name only
+            if (name) {
+                var r = tryCss(tag + '[name="' + esc(name) + '"]', 'name');
+                if (r) return r;
+                r = tryXp('//' + tag + '[@name="' + xpEsc(name) + '"]', 'name');
+                if (r) return r;
+            }
+
+            // 8. title
+            var title = element.getAttribute('title');
+            if (title) {
+                var r = tryCss(tag + '[title="' + title.replace(/"/g,'\\"') + '"]', 'title');
+                if (r) return r;
+                r = tryXp('//' + tag + '[@title="' + xpEsc(title) + '"]', 'title');
+                if (r) return r;
+            }
+
+            // 9. class-based (scoped under parent)
+            var clsList = (typeof element.className === 'string') ? element.className.trim().split(/\s+/) : [];
+            var goodCls = clsList.filter(function(c) {
+                return c.length > 0 && !/^\d/.test(c) && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(c);
+            });
+            if (goodCls.length > 0) {
+                var sel = tag + '.' + esc(goodCls[0]);
+                var r = tryCss(sel, 'tag+class');
+                if (r) return r;
+                r = tryXp('//' + tag + '[contains(@class,"' + xpEsc(goodCls[0]) + '")]', 'tag+class');
+                if (r) return r;
+            }
+
+            // No reliable locator found
+            return null;
         } catch(e) { return null; }
+    }
+
+    // -- Keep old function name for backward compatibility, wraps the new generator --
+    function generateLocalHeuristicLocators(element) {
+        var pw = generatePlaywrightStyleLocators(element);
+        if (!pw || !pw.locator) return null;
+        return { css: pw.type === 'css' ? pw.locator : null, xpath: pw.type === 'xpath' ? pw.locator : null, method: pw.method, type: pw.type };
     }
     function getSessionId() {
         let sessionId = sessionStorage.getItem('elementLocatorSessionId');

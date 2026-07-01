@@ -297,6 +297,15 @@ function renderCapturedElementItem(el, index) {
     parts.push('<code class="captured-html-code">'+escapeHtml(preview)+'</code>');
   }
   parts.push('</div>');
+  // Local heuristic locator (single unique locator, CSS priority, instant)
+  if (el.localHeuristic && (el.localHeuristic.css || el.localHeuristic.xpath)) {
+    var lh = el.localHeuristic;
+    var kind = lh.type === 'xpath' ? 'XPath' : 'CSS';
+    var value = lh.css || lh.xpath || '';
+    parts.push('<div class="local-locator">');
+    parts.push('<div class="local-locator-row"><span class="local-locator-kind">⚡' + kind + '</span><code class="local-locator-value" title="' + escapeHtml(value) + '">' + escapeHtml(value) + '</code><span class="local-locator-info">' + escapeHtml(lh.method || '') + '</span></div>');
+    parts.push('</div>');
+  }
   // AI results: inline display when analyzed
   if (el.ai && (el.ai.waiting || el.ai.error)) {
     parts.push('<div class="ai-locator ' + (el.ai.error ? 'ai-error' : 'ai-waiting') + '">' + (el.ai.error ? escapeHtml(el.ai.error) : 'Analyzing...') + '</div>');
