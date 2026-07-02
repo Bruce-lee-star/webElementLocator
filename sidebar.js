@@ -65,13 +65,23 @@ function sendToContentScript(type, data){
 
   // Fallback: route through background only if postMessage is unavailable
   try {
-    chrome.runtime.sendMessage({ __forward_to_content__: payload });
+    chrome.runtime.sendMessage({ __forward_to_content__: payload }, function() {
+      if (chrome.runtime && chrome.runtime.lastError) {
+        // silently consume lastError to avoid Unchecked runtime.lastError
+      }
+    });
   } catch(e) {}
 }
 
 function sendRuntimeMessage(msg){
   return new Promise(function(resolve){
-    try { chrome.runtime.sendMessage(msg, function(res){ resolve(res); }); }
+    try { chrome.runtime.sendMessage(msg, function(res){
+      if (chrome.runtime && chrome.runtime.lastError) {
+        resolve({ ok:false, error: chrome.runtime.lastError.message });
+        return;
+      }
+      resolve(res);
+    }); }
     catch(e){ resolve({ ok:false, error: String(e && e.message || e) }); }
   });
 }

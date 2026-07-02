@@ -36,7 +36,13 @@
     function safeRuntimeSendMessage(msg, cb) {
         try {
             if (!chromeIsReady()) { if (cb) cb(new Error('Extension context invalid')); return; }
-            chrome.runtime.sendMessage(msg, cb);
+            chrome.runtime.sendMessage(msg, function(res) {
+                if (chrome.runtime && chrome.runtime.lastError) {
+                    if (cb) cb(new Error(chrome.runtime.lastError.message));
+                    return;
+                }
+                if (cb) cb(null, res);
+            });
         } catch (e) { if (cb) cb(e); }
     }
     function safeRuntimeOnMessage(fn) {
@@ -2761,7 +2767,8 @@
                 message: data.message,
                 modelName: data.modelName || ''
             }
-        }, (response) => {
+        }, (err, response) => {
+            if (err) return;
             if (response) sendToSidebar('AI_CHAT_RESULT', response);
         });
     }
@@ -2774,15 +2781,15 @@
                 token: data.token,
                 apiUrl: data.apiUrl
             }
-        }, (response) => {
-            if (response) {
-                sendToSidebar('AI_TEST_RESULT', response);
-            } else {
+        }, (err, response) => {
+            if (err || !response) {
                 sendToSidebar('AI_TEST_RESULT', {
                     success: false,
-                    error: 'No response from background script'
+                    error: err ? err.message : 'No response from background script'
                 });
+                return;
             }
+            sendToSidebar('AI_TEST_RESULT', response);
         });
     }
 

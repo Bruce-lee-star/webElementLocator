@@ -558,21 +558,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (type === "UPDATE_LOCATOR_MODE") { try { const tabId = sender && sender.tab && sender.tab.id; if (tabId != null) { locatorModeStates.set(tabId, request.active); setIconForTab(tabId, request.active); } } catch (e) {} try { sendResponse && sendResponse({ ok: true }); } catch (e) {} return false; }
 
         if (type === "REQUEST_AXTREE_NODE") {
-            (async () => {
-                try {
-                    const tabId = sender && sender.tab && sender.tab.id;
-                    const rect = request.data && request.data.rect;
-                    if (!tabId || !rect) {
-                        sendResponse({ ok: false, error: 'Missing tabId or rect' });
-                        return;
-                    }
-                    const node = await findAXTreeNodeAtPoint(tabId, rect);
-                    sendResponse({ ok: true, node: node });
-                } catch (err) {
-                    sendResponse({ ok: false, error: String(err && err.message || err) });
-                }
-            })();
-            return true;
+            // chrome.automation is not available on MV3; skip silently
+            try { sendResponse({ ok: false, error: 'automation not supported in MV3' }); } catch (e) {}
+            return false;
         }
 
         try { sendResponse && sendResponse({ ok: false, error: "Unhandled: " + type }); } catch (e) {}
