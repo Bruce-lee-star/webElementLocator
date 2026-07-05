@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Web Element Selector",
   "version": "1.0",
-  "description": "Advanced element locator with AI-powered xpath and css selector generation. Supports ChatGPT, Gemini, DeepSeek, and Claude.",
+  "description": "Web element locator tool for generating CSS and XPath selectors.",
 
   "icons": {
     "16": "icons/icon16.png",
@@ -15,14 +15,7 @@
     "scripting",
     "activeTab",
     "storage",
-    "tabs",
-    "downloads"
-  ],
-  "host_permissions": [
-    "https://api.openai.com/*",
-    "https://generativelanguage.googleapis.com/*",
-    "https://api.deepseek.com/*",
-    "https://api.anthropic.com/*"
+    "tabs"
   ],
   "action": {
     "default_title": "Web Element Selector",
@@ -38,7 +31,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sidebar.html", "sidebar.css", "sidebar.js", "lucide.js","error_handling_utils.js", "templates/*", "config.json"],
+      "resources": ["sidebar.html", "sidebar.css", "sidebar.js", "lucide.js"],
       "matches": ["<all_urls>"]
     }
   ],

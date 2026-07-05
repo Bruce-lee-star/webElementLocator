@@ -91,6 +91,7 @@
     let currentHistoryIndex = -1;
     let locatorCache = new Map();
     let listenersAttached = false;
+    let commListenerAttached = false;
     let currentOrigin = window.location.origin;
 
     function checkExtensionContext() {
@@ -117,15 +118,45 @@
         currentEventListeners = [];
     }
 
+    function attachListenersToIframes() {
+        const iframes = document.querySelectorAll('iframe');
+        const mouseOptions = { passive: false };
+        const clickOptions = { capture: true, passive: false };
+        
+        for (let i = 0; i < iframes.length; i++) {
+            const iframe = iframes[i];
+            try {
+                const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                if (iframeDoc) {
+                    addEventListenerSafely(iframeDoc, "mouseover", handleMouseOver, mouseOptions);
+                    addEventListenerSafely(iframeDoc, "mouseout", handleMouseOut, mouseOptions);
+                    addEventListenerSafely(iframeDoc, "click", handleElementClick, clickOptions);
+                }
+            } catch (e) {
+                console.warn('[Content] Cannot attach listeners to cross-origin iframe:', iframe.src);
+            }
+        }
+    }
+
+    function getElementFromShadowRoot(event) {
+        let element = event.target;
+        let composedPath = event.composedPath ? event.composedPath() : [];
+        
+        if (composedPath.length > 0) {
+            element = composedPath[0];
+        }
+        
+        return element;
+    }
+
     window.createSidebar = function() {
         if (!chromeIsReady()) return;
         const existingContainer = document.getElementById("elementLocatorContainer");
         if (existingContainer) {
-            existingContainer.style.display = "block";
+            existingContainer.style.display = "flex";
             const existingHandle = document.getElementById("elementLocatorResizeHandle");
             if (existingHandle) {
                 existingHandle.style.display = "block";
-                existingHandle.style.right = existingContainer.style.width;
             }
             return;
         }
@@ -141,70 +172,230 @@
         sidebarContainer.setAttribute('data-extension-element', 'true');
         sidebarContainer.style.cssText = `
             position: fixed !important;
-            top: 0 !important;
-            right: 0 !important;
+            top: 20px !important;
+            right: 20px !important;
             width: 380px !important;
             min-width: 280px !important;
             max-width: 600px !important;
-            height: 100vh !important;
+            height: 500px !important;
+            min-height: 200px !important;
+            max-height: 80vh !important;
             z-index: 2147483647 !important;
             background: white !important;
-            box-shadow: -5px 0 15px rgba(0,0,0,0.3) !important;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3) !important;
             pointer-events: auto !important;
+            border-radius: 12px !important;
+            overflow: hidden !important;
+            display: flex !important;
+            flex-direction: column !important;
         `;
 
-        // Create resize handle on the left edge
+        const titleBar = document.createElement('div');
+        titleBar.id = 'elementLocatorTitleBar';
+        titleBar.setAttribute('data-extension-element', 'true');
+        titleBar.style.cssText = `
+            flex-shrink: 0 !important;
+            height: 40px !important;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+            color: white !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            padding: 0 12px !important;
+            cursor: move !important;
+            user-select: none !important;
+            font-size: 13px !important;
+            font-weight: 600 !important;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+        `;
+
+        const titleLeft = document.createElement('div');
+        titleLeft.style.cssText = `
+            display: flex !important;
+            align-items: center !important;
+            gap: 8px !important;
+            pointer-events: none !important;
+        `;
+        const titleIcon = document.createElement('span');
+        titleIcon.innerHTML = '🎯';
+        titleIcon.style.cssText = 'font-size: 16px !important;';
+        const titleText = document.createElement('span');
+        titleText.textContent = 'Web Element Selector';
+        titleLeft.appendChild(titleIcon);
+        titleLeft.appendChild(titleText);
+
+        const titleControls = document.createElement('div');
+        titleControls.style.cssText = `
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+        `;
+
+        const minimizeBtn = document.createElement('button');
+        minimizeBtn.id = 'elementLocatorMinimizeBtn';
+        minimizeBtn.setAttribute('data-extension-element', 'true');
+        minimizeBtn.innerHTML = '&#8211;';
+        minimizeBtn.style.cssText = `
+            width: 26px !important;
+            height: 26px !important;
+            border: none !important;
+            background: rgba(255,255,255,0.2) !important;
+            color: white !important;
+            border-radius: 50% !important;
+            cursor: pointer !important;
+            font-size: 16px !important;
+            line-height: 1 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: all 0.2s ease !important;
+            padding: 0 !important;
+        `;
+        minimizeBtn.addEventListener('mouseenter', () => {
+            minimizeBtn.style.background = 'rgba(255,255,255,0.35) !important';
+            minimizeBtn.style.transform = 'scale(1.1) !important';
+        });
+        minimizeBtn.addEventListener('mouseleave', () => {
+            minimizeBtn.style.background = 'rgba(255,255,255,0.2) !important';
+            minimizeBtn.style.transform = 'scale(1) !important';
+        });
+        minimizeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleMinimizeSidebar();
+        });
+
+        const closeBtn = document.createElement('button');
+        closeBtn.id = 'elementLocatorCloseBtn';
+        closeBtn.setAttribute('data-extension-element', 'true');
+        closeBtn.innerHTML = '&times;';
+        closeBtn.style.cssText = `
+            width: 26px !important;
+            height: 26px !important;
+            border: none !important;
+            background: rgba(255,255,255,0.2) !important;
+            color: white !important;
+            border-radius: 50% !important;
+            cursor: pointer !important;
+            font-size: 18px !important;
+            line-height: 1 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            transition: all 0.2s ease !important;
+            padding: 0 !important;
+        `;
+        closeBtn.addEventListener('mouseenter', () => {
+            closeBtn.style.background = 'rgba(255,80,80,0.8) !important';
+            closeBtn.style.transform = 'scale(1.1) !important';
+        });
+        closeBtn.addEventListener('mouseleave', () => {
+            closeBtn.style.background = 'rgba(255,255,255,0.2) !important';
+            closeBtn.style.transform = 'scale(1) !important';
+        });
+        closeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            closeSidebar();
+        });
+
+        titleControls.appendChild(minimizeBtn);
+        titleControls.appendChild(closeBtn);
+        titleBar.appendChild(titleLeft);
+        titleBar.appendChild(titleControls);
+
+        let isDragging = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+        let dragStartLeft = 0;
+        let dragStartTop = 0;
+
+        titleBar.addEventListener('mousedown', (e) => {
+            if (e.target.closest('button')) return;
+            isDragging = true;
+            dragStartX = e.clientX;
+            dragStartY = e.clientY;
+            const rect = sidebarContainer.getBoundingClientRect();
+            dragStartLeft = rect.left;
+            dragStartTop = rect.top;
+            document.body.style.userSelect = 'none !important';
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const deltaX = e.clientX - dragStartX;
+            const deltaY = e.clientY - dragStartY;
+            let newLeft = dragStartLeft + deltaX;
+            let newTop = dragStartTop + deltaY;
+            const maxLeft = window.innerWidth - 100;
+            const maxTop = window.innerHeight - 50;
+            newLeft = Math.max(-sidebarContainer.offsetWidth + 100, Math.min(maxLeft, newLeft));
+            newTop = Math.max(0, Math.min(maxTop, newTop));
+            sidebarContainer.style.left = newLeft + 'px';
+            sidebarContainer.style.top = newTop + 'px';
+            sidebarContainer.style.right = 'auto !important';
+            resizeHandle.style.left = 'auto !important';
+            resizeHandle.style.right = 'auto !important';
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                document.body.style.userSelect = '';
+            }
+        });
+
+        sidebarContainer.appendChild(titleBar);
+
+        // Create resize handle at bottom-right corner
         const resizeHandle = document.createElement('div');
         resizeHandle.id = 'elementLocatorResizeHandle';
         resizeHandle.setAttribute('data-extension-element', 'true');
         resizeHandle.style.cssText = `
             position: fixed !important;
-            top: 0 !important;
-            right: ${sidebarContainer.style.width} !important;
-            width: 6px !important;
-            height: 100vh !important;
+            bottom: 0 !important;
+            right: 0 !important;
+            width: 16px !important;
+            height: 16px !important;
             z-index: 2147483648 !important;
-            cursor: ew-resize !important;
+            cursor: nwse-resize !important;
             background: transparent !important;
             pointer-events: auto !important;
-            transition: background 0.2s ease !important;
         `;
-        resizeHandle.addEventListener('mouseenter', () => {
-            resizeHandle.style.background = 'rgba(102, 126, 234, 0.3) !important';
-        });
-        resizeHandle.addEventListener('mouseleave', () => {
-            if (!isResizing) resizeHandle.style.background = 'transparent !important';
-        });
 
         let isResizing = false;
-        let startX = 0;
-        let startWidth = 0;
+        let resizeStartX = 0;
+        let resizeStartY = 0;
+        let resizeStartWidth = 0;
+        let resizeStartHeight = 0;
 
         resizeHandle.addEventListener('mousedown', (e) => {
             isResizing = true;
-            startX = e.clientX;
-            startWidth = sidebarContainer.offsetWidth;
-            resizeHandle.style.background = 'rgba(102, 126, 234, 0.6) !important';
-            document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'ew-resize';
+            resizeStartX = e.clientX;
+            resizeStartY = e.clientY;
+            const rect = sidebarContainer.getBoundingClientRect();
+            resizeStartWidth = rect.width;
+            resizeStartHeight = rect.height;
+            document.body.style.userSelect = 'none !important';
             e.preventDefault();
+            e.stopPropagation();
         });
 
         document.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
-            const deltaX = startX - e.clientX;
-            let newWidth = startWidth + deltaX;
+            const deltaX = e.clientX - resizeStartX;
+            const deltaY = e.clientY - resizeStartY;
+            let newWidth = resizeStartWidth + deltaX;
+            let newHeight = resizeStartHeight + deltaY;
             newWidth = Math.max(280, Math.min(600, newWidth));
+            newHeight = Math.max(200, Math.min(window.innerHeight * 0.8, newHeight));
             sidebarContainer.style.width = newWidth + 'px';
-            resizeHandle.style.right = newWidth + 'px';
+            sidebarContainer.style.height = newHeight + 'px';
         });
 
         document.addEventListener('mouseup', () => {
             if (isResizing) {
                 isResizing = false;
-                resizeHandle.style.background = 'transparent !important';
                 document.body.style.userSelect = '';
-                document.body.style.cursor = '';
             }
         });
 
@@ -219,12 +410,37 @@
         sidebarIframe.setAttribute('data-extension-element', 'true');
         sidebarIframe.style.cssText = `
             width: 100% !important;
-            height: 100% !important;
+            flex: 1 !important;
+            min-height: 0 !important;
             border: none !important;
             background: white !important;
         `;
 
         sidebarContainer.appendChild(sidebarIframe);
+
+        function toggleMinimizeSidebar() {
+            const iframe = document.getElementById('elementLocatorSidebar');
+            const handle = document.getElementById('elementLocatorResizeHandle');
+            const container = document.getElementById('elementLocatorContainer');
+            if (!container) return;
+            if (container.dataset.minimized === 'true') {
+                container.dataset.minimized = 'false';
+                if (iframe) iframe.style.display = 'block';
+                if (handle) handle.style.display = 'block';
+                const prevH = container.dataset.prevHeight || '500px';
+                const prevW = container.dataset.prevWidth || '380px';
+                container.style.height = prevH;
+                container.style.width = prevW;
+            } else {
+                container.dataset.minimized = 'true';
+                container.dataset.prevHeight = container.style.height;
+                container.dataset.prevWidth = container.style.width;
+                if (iframe) iframe.style.display = 'none';
+                if (handle) handle.style.display = 'none';
+                container.style.height = '40px';
+            }
+        }
+
         locatorGenerator = new UnifiedLocatorGenerator();
 
         sidebarIframe.onload = function () {
@@ -256,8 +472,8 @@
 
         function setupAlternativeCommunication() {
             if (!chromeIsReady()) return;
-            if (listenersAttached) return;
-            listenersAttached = true;
+            if (commListenerAttached) return;
+            commListenerAttached = true;
 
             const messageHandler = function(event) {
                 if (!sidebarIframe || !sidebarIframe.contentWindow) return;
@@ -265,10 +481,14 @@
                 if (!chromeIsReady()) return;
                 const msg = event.data || {};
                 const type = msg.type;
+                console.log('[Content] messageHandler received:', type);
 
                 if (type === 'SIDEBAR_READY' || type === 'ARE_YOU_READY_ACK') {
                     sidebarReady = true;
                     if (messageQueue.length > 0) processMessageQueue();
+                } else {
+                    console.log('[Content] Calling handleSidebarMessage:', type);
+                    handleSidebarMessage(type, msg.data);
                 }
             };
             window.addEventListener("message", messageHandler);
@@ -1019,112 +1239,716 @@
         }
 
         // Generates XPath locators for SVG elements.
-                generateSVGXPathLocators(element) {
+        generateSVGXPathLocators(element) {
             const locators = [];
             if (!element || !element.tagName) return locators;
             const tag = element.tagName.toLowerCase();
+            const self = this;
+
+            function xpEsc(s) { return String(s).replace(/'/g, "&apos;").replace(/"/g, '&quot;'); }
+
+            function getClassList(el) {
+                try {
+                    if (el.classList && typeof el.classList === 'object' && el.classList.length !== undefined) {
+                        return Array.from(el.classList);
+                    }
+                } catch(e) {}
+                try {
+                    const cls = el.getAttribute('class');
+                    if (cls && typeof cls === 'string') {
+                        return cls.trim().split(/\s+/).filter(Boolean);
+                    }
+                } catch(e) {}
+                return [];
+            }
+
+            function isMeaningfulClass(cls) {
+                if (!cls || cls.length < 3) return false;
+                if (/^\d/.test(cls)) return false;
+                const randomPatterns = [/^[a-z]\d+$/i, /^[a-f0-9]{8,}$/i, /[-_][a-f0-9]{6,}$/i];
+                for (const pat of randomPatterns) {
+                    if (pat.test(cls)) return false;
+                }
+                return true;
+            }
+
+            function getSvgRoot(el) {
+                let cur = el;
+                while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') {
+                    cur = cur.parentElement;
+                }
+                return cur;
+            }
+
+            function getHtmlAncestors(el, maxDepth) {
+                const ancestors = [];
+                let cur = el.parentElement;
+                while (cur && cur.tagName && ancestors.length < maxDepth) {
+                    const ns = cur.namespaceURI || '';
+                    if (ns !== 'http://www.w3.org/2000/svg') {
+                        ancestors.push(cur);
+                    }
+                    cur = cur.parentElement;
+                }
+                return ancestors;
+            }
+
+            function getSiblingIndex(el) {
+                try {
+                    const parent = el.parentElement;
+                    if (!parent) return -1;
+                    const siblings = parent.children;
+                    let idx = 1;
+                    for (let i = 0; i < siblings.length; i++) {
+                        if (siblings[i].isSameNode(el)) return idx;
+                        if (siblings[i].tagName === el.tagName) idx++;
+                    }
+                } catch(e) {}
+                return -1;
+            }
+
+            function getPositionIndex(el) {
+                try {
+                    const parent = el.parentElement;
+                    if (!parent) return -1;
+                    const siblings = parent.querySelectorAll(el.tagName.toLowerCase());
+                    for (let i = 0; i < siblings.length; i++) {
+                        if (siblings[i].isSameNode(el)) return i + 1;
+                    }
+                } catch(e) {}
+                return -1;
+            }
+
+            function buildAncestorXpath(ancestors, levels) {
+                let xp = '';
+                const count = Math.min(levels, ancestors.length);
+                for (let i = count - 1; i >= 0; i--) {
+                    const anc = ancestors[i];
+                    const ancTag = anc.tagName.toLowerCase();
+                    const ancId = anc.id || anc.getAttribute('id');
+                    const ancClasses = getClassList(anc).filter(isMeaningfulClass);
+
+                    if (ancId) {
+                        xp += '//*[@id="' + xpEsc(ancId) + '"]';
+                    } else if (ancClasses.length > 0) {
+                        xp += '//' + ancTag + '[contains(@class, "' + xpEsc(ancClasses[0]) + '")]';
+                    } else {
+                        xp += '//' + ancTag;
+                    }
+                }
+                return xp;
+            }
+
+            const svgRoot = getSvgRoot(element);
+            const htmlAncestors = getHtmlAncestors(svgRoot || element, 6);
+            const isSvgTag = tag === 'svg';
+            const targetSvg = svgRoot || element;
+
+            const id = element.id || element.getAttribute('id');
+            const dataTestId = element.getAttribute('data-testid') || element.getAttribute('data-test');
             const ariaLabel = element.getAttribute('aria-label');
             const dataIcon = element.getAttribute('data-icon');
-            const classList = Array.from(element.classList || []);
-            const id = element.id || element.getAttribute('id');
+            const roleAttr = element.getAttribute('role');
+            const classList = getClassList(element).filter(isMeaningfulClass);
+
             const viewBox = element.getAttribute('viewBox');
             const widthAttr = element.getAttribute('width');
             const heightAttr = element.getAttribute('height');
             const fillAttr = element.getAttribute('fill');
             const strokeAttr = element.getAttribute('stroke');
+            const strokeWidthAttr = element.getAttribute('stroke-width');
 
-            const parentSvg = (() => { let cur = element; while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') cur = cur.parentElement; return cur; })();
-            if (tag !== 'svg' && parentSvg) {
-                const parentId = parentSvg.id || parentSvg.getAttribute('id');
-                const parentViewBox = parentSvg.getAttribute('viewBox');
-                const parentWidth = parentSvg.getAttribute('width');
-                const parentHeight = parentSvg.getAttribute('height');
-                const parentFill = parentSvg.getAttribute('fill');
+            const svgId = targetSvg ? (targetSvg.id || targetSvg.getAttribute('id')) : '';
+            const svgViewBox = targetSvg ? targetSvg.getAttribute('viewBox') : '';
+            const svgClasses = targetSvg ? getClassList(targetSvg).filter(isMeaningfulClass) : [];
 
-                if (id) locators.push({ type: 'SVG Child by ID', value: '//svg//' + tag + '[@id="' + id + '"]', confidence: 95, level: 'simple' });
-                if (ariaLabel) locators.push({ type: 'SVG Child by Aria', value: '//svg//' + tag + '[@aria-label="' + ariaLabel + '"]', confidence: 95, level: 'simple' });
-                if (dataIcon) locators.push({ type: 'SVG Child by Data-Icon', value: '//svg//' + tag + '[@data-icon="' + dataIcon + '"]', confidence: 95, level: 'simple' });
-                if (classList) classList.forEach(cls => { if (cls && cls.length > 2) locators.push({ type: 'SVG Child by Class', value: '//svg//' + tag + '[contains(@class, "' + cls + '")]', confidence: 85, level: 'medium' }); });
+            // ===== Strategy 1: Direct unique attributes (highest confidence) =====
+            if (id) {
+                locators.push({ type: 'SVG by ID', value: '//*[@id="' + xpEsc(id) + '"]', confidence: 100, level: 'simple' });
+            }
+            if (dataTestId) {
+                locators.push({ type: 'SVG by data-testid', value: '//' + tag + '[@data-testid="' + xpEsc(dataTestId) + '"]', confidence: 98, level: 'simple' });
+            }
+            if (ariaLabel) {
+                locators.push({ type: 'SVG by aria-label', value: '//' + tag + '[@aria-label="' + xpEsc(ariaLabel) + '"]', confidence: 94, level: 'simple' });
+            }
+            if (dataIcon) {
+                locators.push({ type: 'SVG by data-icon', value: '//' + tag + '[@data-icon="' + xpEsc(dataIcon) + '"]', confidence: 94, level: 'simple' });
+            }
+            if (roleAttr) {
+                locators.push({ type: 'SVG by role', value: '//' + tag + '[@role="' + xpEsc(roleAttr) + '"]', confidence: 82, level: 'simple' });
+            }
 
-                // Use parent SVG's viewBox (most unique attribute)
-                if (parentViewBox) {
-                    locators.push({ type: 'SVG Child by Parent ViewBox', value: '//svg[@viewBox="' + parentViewBox + '"]//' + tag, confidence: 90, level: 'simple' });
-                }
-                if (parentId) locators.push({ type: 'SVG Child by Parent SVG ID', value: '//svg[@id="' + parentId + '"]//' + tag, confidence: 90, level: 'simple' });
-                if (parentWidth && parentHeight) {
-                    locators.push({ type: 'SVG Child by Parent Size', value: '//svg[@width="' + parentWidth + '"][@height="' + parentHeight + '"]//' + tag, confidence: 75, level: 'medium' });
-                }
-                if (strokeAttr) {
-                    locators.push({ type: 'SVG Child Stroke', value: '//svg//' + tag + '[@stroke="' + strokeAttr + '"]', confidence: 70, level: 'medium' });
-                }
-                if (tag === 'path' || tag === 'rect' || tag === 'circle') {
-                    const attrD = element.getAttribute('d');
-                    if (attrD && attrD.length > 5) {
-                        locators.push({ type: 'SVG Path by d (partial)', value: '//svg[@viewBox="' + (parentViewBox || '') + '"]//' + tag + '[starts-with(@d, "' + attrD.slice(0, 12).replace(/"/g, '&quot;') + '")]', confidence: 65, level: 'advanced' });
+            // ===== Strategy 2: With HTML ancestor context (very important for icon SVGs) =====
+            if (htmlAncestors.length > 0) {
+                for (let depth = 1; depth <= Math.min(3, htmlAncestors.length); depth++) {
+                    const ancestorBase = buildAncestorXpath(htmlAncestors, depth);
+                    if (!ancestorBase) continue;
+
+                    if (isSvgTag) {
+                        locators.push({
+                            type: `SVG by ${depth}-ancestor + svg`,
+                            value: ancestorBase + '//svg',
+                            confidence: 88 - (depth - 1) * 5,
+                            level: depth === 1 ? 'simple' : 'medium'
+                        });
+
+                        if (svgViewBox) {
+                            locators.push({
+                                type: `SVG by ${depth}-ancestor + viewBox`,
+                                value: ancestorBase + '//svg[@viewBox="' + xpEsc(svgViewBox) + '"]',
+                                confidence: 92 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                        if (svgClasses.length > 0) {
+                            locators.push({
+                                type: `SVG by ${depth}-ancestor + class`,
+                                value: ancestorBase + '//svg[contains(@class, "' + xpEsc(svgClasses[0]) + '")]',
+                                confidence: 90 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                    } else {
+                        locators.push({
+                            type: `SVG Child by ${depth}-ancestor`,
+                            value: ancestorBase + '//' + tag,
+                            confidence: 85 - (depth - 1) * 5,
+                            level: depth === 1 ? 'simple' : 'medium'
+                        });
+
+                        if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
+                            locators.push({
+                                type: `SVG Child by ${depth}-ancestor + stroke`,
+                                value: ancestorBase + '//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"]',
+                                confidence: 80 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                        if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
+                            locators.push({
+                                type: `SVG Child by ${depth}-ancestor + fill`,
+                                value: ancestorBase + '//' + tag + '[@fill="' + xpEsc(fillAttr) + '"]',
+                                confidence: 75 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
                     }
                 }
-                locators.push({ type: 'SVG Child [Basic]', value: '//svg//' + tag, confidence: 40, level: 'advanced' });
-                return locators;
+
+                // Strategy: ancestor with position index for disambiguation
+                const firstAnc = htmlAncestors[0];
+                if (firstAnc) {
+                    const firstAncClasses = getClassList(firstAnc).filter(isMeaningfulClass);
+                    const posIdx = getPositionIndex(firstAnc);
+                    if (posIdx > 0 && firstAncClasses.length > 0) {
+                        const ancXp = '//' + firstAnc.tagName.toLowerCase() + '[contains(@class, "' + xpEsc(firstAncClasses[0]) + '")][' + posIdx + ']';
+                        locators.push({
+                            type: 'SVG by ancestor[pos]',
+                            value: ancXp + '//' + (isSvgTag ? 'svg' : tag),
+                            confidence: 86,
+                            level: 'advanced'
+                        });
+                    }
+                }
             }
 
-            // Direct <svg> element
-            if (id) locators.push({ type: 'SVG by ID', value: '//svg[@id="' + id + '"]', confidence: 100, level: 'simple' });
-            if (ariaLabel) locators.push({ type: 'SVG by Aria-Label', value: '//svg[@aria-label="' + ariaLabel + '"]', confidence: 95, level: 'simple' });
-            if (classList && classList.length > 0) locators.push({ type: 'SVG by Class', value: '//svg[contains(@class, "' + classList[0] + '")]', confidence: 85, level: 'medium' });
-            if (viewBox) {
-                locators.push({ type: 'SVG by ViewBox', value: '//svg[@viewBox="' + viewBox + '"]', confidence: 90, level: 'simple' });
+            // ===== Strategy 3: SVG internal attributes =====
+            if (isSvgTag) {
+                if (viewBox) {
+                    locators.push({ type: 'SVG by ViewBox', value: '//svg[@viewBox="' + xpEsc(viewBox) + '"]', confidence: 80, level: 'simple' });
+                }
+                if (classList.length > 0) {
+                    locators.push({ type: 'SVG by Class', value: '//svg[contains(@class, "' + xpEsc(classList[0]) + '")]', confidence: 75, level: 'medium' });
+                    if (classList.length >= 2) {
+                        locators.push({
+                            type: 'SVG by Multi-Class',
+                            value: '//svg[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
+                            confidence: 85,
+                            level: 'medium'
+                        });
+                    }
+                }
+                if (widthAttr && heightAttr) {
+                    locators.push({ type: 'SVG by Size', value: '//svg[@width="' + xpEsc(widthAttr) + '"][@height="' + xpEsc(heightAttr) + '"]', confidence: 60, level: 'medium' });
+                }
+                if (viewBox && fillAttr && fillAttr !== 'currentColor') {
+                    locators.push({ type: 'SVG by ViewBox+Fill', value: '//svg[@viewBox="' + xpEsc(viewBox) + '"][@fill="' + xpEsc(fillAttr) + '"]', confidence: 84, level: 'medium' });
+                }
+                const svgPosIdx = getPositionIndex(element);
+                if (svgPosIdx > 0) {
+                    locators.push({ type: 'SVG by Position', value: '(//svg)[' + svgPosIdx + ']', confidence: 45, level: 'advanced' });
+                }
+            } else {
+                if (classList.length > 0) {
+                    classList.forEach(cls => {
+                        locators.push({ type: 'SVG Child by Class', value: '//svg//' + tag + '[contains(@class, "' + xpEsc(cls) + '")]', confidence: 72, level: 'medium' });
+                    });
+                    if (classList.length >= 2) {
+                        locators.push({
+                            type: 'SVG Child by Multi-Class',
+                            value: '//svg//' + tag + '[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
+                            confidence: 82,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
+                    locators.push({ type: 'SVG Child by Stroke', value: '//svg//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"]', confidence: 55, level: 'medium' });
+                }
+                if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
+                    locators.push({ type: 'SVG Child by Fill', value: '//svg//' + tag + '[@fill="' + xpEsc(fillAttr) + '"]', confidence: 48, level: 'medium' });
+                }
+                if (strokeAttr && fillAttr && strokeAttr !== 'currentColor' && fillAttr !== 'currentColor') {
+                    locators.push({
+                        type: 'SVG Child by Stroke+Fill',
+                        value: '//svg//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"][@fill="' + xpEsc(fillAttr) + '"]',
+                        confidence: 72,
+                        level: 'medium'
+                    });
+                }
+
+                if (tag === 'circle') {
+                    const cx = element.getAttribute('cx'), cy = element.getAttribute('cy'), r = element.getAttribute('r');
+                    if (cx && cy && r) {
+                        locators.push({
+                            type: 'SVG Circle by cx+cy+r',
+                            value: '//svg//circle[@cx="' + xpEsc(cx) + '"][@cy="' + xpEsc(cy) + '"][@r="' + xpEsc(r) + '"]',
+                            confidence: 78,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if ((tag === 'rect' || tag === 'image')) {
+                    const x = element.getAttribute('x'), y = element.getAttribute('y');
+                    const w = element.getAttribute('width'), h = element.getAttribute('height');
+                    if (x && y && w && h) {
+                        locators.push({
+                            type: 'SVG ' + tag + ' by position+size',
+                            value: '//svg//' + tag + '[@x="' + xpEsc(x) + '"][@y="' + xpEsc(y) + '"][@width="' + xpEsc(w) + '"][@height="' + xpEsc(h) + '"]',
+                            confidence: 78,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if (tag === 'path') {
+                    const dAttr = element.getAttribute('d');
+                    if (dAttr && dAttr.length > 5) {
+                        const partialD = dAttr.slice(0, 15);
+                        locators.push({
+                            type: 'SVG Path by d (partial)',
+                            value: '//svg//path[starts-with(@d, "' + xpEsc(partialD) + '")]',
+                            confidence: 70,
+                            level: 'advanced'
+                        });
+                        if (fillAttr && fillAttr !== 'currentColor') {
+                            locators.push({
+                                type: 'SVG Path by d+fill',
+                                value: '//svg//path[starts-with(@d, "' + xpEsc(partialD) + '")][@fill="' + xpEsc(fillAttr) + '"]',
+                                confidence: 82,
+                                level: 'advanced'
+                            });
+                        }
+                    }
+                }
+
+                if (tag === 'polygon') {
+                    const points = element.getAttribute('points');
+                    if (points && points.length > 5) {
+                        const partialPts = points.slice(0, 15);
+                        locators.push({
+                            type: 'SVG Polygon by points (partial)',
+                            value: '//svg//polygon[starts-with(@points, "' + xpEsc(partialPts) + '")]',
+                            confidence: 70,
+                            level: 'advanced'
+                        });
+                    }
+                }
+
+                if (svgViewBox) {
+                    locators.push({
+                        type: 'SVG Child by Parent ViewBox',
+                        value: '//svg[@viewBox="' + xpEsc(svgViewBox) + '"]//' + tag,
+                        confidence: 70,
+                        level: 'simple'
+                    });
+                }
+                if (svgId) {
+                    locators.push({
+                        type: 'SVG Child by Parent SVG ID',
+                        value: '//svg[@id="' + xpEsc(svgId) + '"]//' + tag,
+                        confidence: 88,
+                        level: 'simple'
+                    });
+                }
+
+                const childPosIdx = getPositionIndex(element);
+                if (childPosIdx > 0) {
+                    if (svgViewBox) {
+                        locators.push({
+                            type: 'SVG Child by ViewBox+Index',
+                            value: '(//svg[@viewBox="' + xpEsc(svgViewBox) + '"]//' + tag + ')[' + childPosIdx + ']',
+                            confidence: 80,
+                            level: 'advanced'
+                        });
+                    }
+                    locators.push({
+                        type: 'SVG Child by Position',
+                        value: '(//svg//' + tag + ')[' + childPosIdx + ']',
+                        confidence: 42,
+                        level: 'advanced'
+                    });
+                }
             }
-            if (widthAttr && heightAttr) {
-                locators.push({ type: 'SVG by Size', value: '//svg[@width="' + widthAttr + '"][@height="' + heightAttr + '"]', confidence: 75, level: 'medium' });
+
+            // ===== Strategy 4: Basic fallback =====
+            if (isSvgTag) {
+                locators.push({ type: 'SVG Element [Basic]', value: '//svg', confidence: 20, level: 'advanced' });
+            } else {
+                locators.push({ type: 'SVG Child [Basic]', value: '//svg//' + tag, confidence: 25, level: 'advanced' });
             }
-            if (fillAttr) {
-                locators.push({ type: 'SVG by Fill', value: '//svg[@fill="' + fillAttr + '"]', confidence: 60, level: 'medium' });
-            }
-            locators.push({ type: 'SVG Element [Basic]', value: '//svg', confidence: 30, level: 'advanced' });
+
             return locators;
         }
 
-                generateSVGCSSSelectors(element) {
+        generateSVGCSSSelectors(element) {
             const selectors = [];
             if (!element || !element.tagName) return selectors;
             const tag = element.tagName.toLowerCase();
+            const self = this;
+
+            function cssEsc(s) {
+                try { return CSS.escape(s); } catch(e) { return String(s).replace(/"/g, '\\"'); }
+            }
+
+            function getClassList(el) {
+                try {
+                    if (el.classList && typeof el.classList === 'object' && el.classList.length !== undefined) {
+                        return Array.from(el.classList);
+                    }
+                } catch(e) {}
+                try {
+                    const cls = el.getAttribute('class');
+                    if (cls && typeof cls === 'string') {
+                        return cls.trim().split(/\s+/).filter(Boolean);
+                    }
+                } catch(e) {}
+                return [];
+            }
+
+            function isMeaningfulClass(cls) {
+                if (!cls || cls.length < 3) return false;
+                if (/^\d/.test(cls)) return false;
+                const randomPatterns = [/^[a-z]\d+$/i, /^[a-f0-9]{8,}$/i, /[-_][a-f0-9]{6,}$/i];
+                for (const pat of randomPatterns) {
+                    if (pat.test(cls)) return false;
+                }
+                return true;
+            }
+
+            function getSvgRoot(el) {
+                let cur = el;
+                while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') {
+                    cur = cur.parentElement;
+                }
+                return cur;
+            }
+
+            function getHtmlAncestors(el, maxDepth) {
+                const ancestors = [];
+                let cur = el.parentElement;
+                while (cur && cur.tagName && ancestors.length < maxDepth) {
+                    const ns = cur.namespaceURI || '';
+                    if (ns !== 'http://www.w3.org/2000/svg') {
+                        ancestors.push(cur);
+                    }
+                    cur = cur.parentElement;
+                }
+                return ancestors;
+            }
+
+            function getSiblingIndex(el) {
+                try {
+                    const parent = el.parentElement;
+                    if (!parent) return -1;
+                    const siblings = parent.children;
+                    let idx = 1;
+                    for (let i = 0; i < siblings.length; i++) {
+                        if (siblings[i].isSameNode(el)) return idx;
+                        if (siblings[i].tagName === el.tagName) idx++;
+                    }
+                } catch(e) {}
+                return -1;
+            }
+
+            function getNthChildIndex(el) {
+                try {
+                    const parent = el.parentElement;
+                    if (!parent) return -1;
+                    const siblings = parent.children;
+                    for (let i = 0; i < siblings.length; i++) {
+                        if (siblings[i].isSameNode(el)) return i + 1;
+                    }
+                } catch(e) {}
+                return -1;
+            }
+
+            function buildAncestorSelector(ancestors, levels) {
+                let sel = '';
+                const count = Math.min(levels, ancestors.length);
+                for (let i = count - 1; i >= 0; i--) {
+                    const anc = ancestors[i];
+                    const ancTag = anc.tagName.toLowerCase();
+                    const ancId = anc.id || anc.getAttribute('id');
+                    const ancClasses = getClassList(anc).filter(isMeaningfulClass);
+
+                    if (ancId) {
+                        sel += '#' + cssEsc(ancId) + ' ';
+                    } else if (ancClasses.length > 0) {
+                        sel += ancTag + '.' + cssEsc(ancClasses[0]) + ' ';
+                    } else {
+                        sel += ancTag + ' ';
+                    }
+                }
+                return sel;
+            }
+
+            const svgRoot = getSvgRoot(element);
+            const htmlAncestors = getHtmlAncestors(svgRoot || element, 6);
+            const isSvgTag = tag === 'svg';
+            const targetSvg = svgRoot || element;
+
+            const id = element.id || element.getAttribute('id');
+            const dataTestId = element.getAttribute('data-testid') || element.getAttribute('data-test');
             const ariaLabel = element.getAttribute('aria-label');
             const dataIcon = element.getAttribute('data-icon');
-            const classList = Array.from(element.classList || []);
-            const id = element.id || element.getAttribute('id');
+            const roleAttr = element.getAttribute('role');
+            const classList = getClassList(element).filter(isMeaningfulClass);
+
             const viewBox = element.getAttribute('viewBox');
             const widthAttr = element.getAttribute('width');
             const heightAttr = element.getAttribute('height');
+            const fillAttr = element.getAttribute('fill');
+            const strokeAttr = element.getAttribute('stroke');
+            const strokeWidthAttr = element.getAttribute('stroke-width');
 
-            const parentSvg = (() => { let cur = element; while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') cur = cur.parentElement; return cur; })();
-            if (tag !== 'svg' && parentSvg) {
-                const parentId = parentSvg.id || parentSvg.getAttribute('id');
-                const parentViewBox = parentSvg.getAttribute('viewBox');
-                const parentWidth = parentSvg.getAttribute('width');
-                const parentHeight = parentSvg.getAttribute('height');
+            const svgId = targetSvg ? (targetSvg.id || targetSvg.getAttribute('id')) : '';
+            const svgViewBox = targetSvg ? targetSvg.getAttribute('viewBox') : '';
+            const svgClasses = targetSvg ? getClassList(targetSvg).filter(isMeaningfulClass) : [];
 
-                if (id) selectors.push({ type: 'SVG Child by ID', value: 'svg ' + tag + '#' + id, confidence: 95, level: 'simple' });
-                if (ariaLabel) selectors.push({ type: 'SVG Child by Aria', value: 'svg ' + tag + '[aria-label="' + ariaLabel + '"]', confidence: 95, level: 'simple' });
-                if (dataIcon) selectors.push({ type: 'SVG Child by Data-Icon', value: 'svg ' + tag + '[data-icon="' + dataIcon + '"]', confidence: 95, level: 'simple' });
-                if (classList) classList.forEach(cls => { if (cls && cls.length > 2) selectors.push({ type: 'SVG Child by Class', value: 'svg ' + tag + '.' + cls, confidence: 85, level: 'medium' }); });
-
-                if (parentViewBox) {
-                    selectors.push({ type: 'SVG Child by Parent ViewBox', value: 'svg[viewBox="' + parentViewBox + '"] ' + tag, confidence: 90, level: 'simple' });
-                }
-                if (parentId) selectors.push({ type: 'SVG Child by Parent SVG ID', value: 'svg#' + parentId + ' ' + tag, confidence: 90, level: 'simple' });
-                if (parentWidth && parentHeight) {
-                    selectors.push({ type: 'SVG Child by Parent Size', value: 'svg[width="' + parentWidth + '"][height="' + parentHeight + '"] ' + tag, confidence: 70, level: 'medium' });
-                }
-                selectors.push({ type: 'SVG Child [Basic]', value: 'svg ' + tag, confidence: 35, level: 'advanced' });
-                return selectors;
+            // ===== Strategy 1: Direct unique attributes (highest confidence) =====
+            if (id) {
+                selectors.push({ type: 'SVG by ID', value: '#' + cssEsc(id), confidence: 100, level: 'simple' });
+            }
+            if (dataTestId) {
+                selectors.push({ type: 'SVG by data-testid', value: tag + '[data-testid="' + dataTestId + '"]', confidence: 98, level: 'simple' });
+            }
+            if (ariaLabel) {
+                selectors.push({ type: 'SVG by aria-label', value: tag + '[aria-label="' + ariaLabel + '"]', confidence: 94, level: 'simple' });
+            }
+            if (dataIcon) {
+                selectors.push({ type: 'SVG by data-icon', value: tag + '[data-icon="' + dataIcon + '"]', confidence: 94, level: 'simple' });
+            }
+            if (roleAttr) {
+                selectors.push({ type: 'SVG by role', value: tag + '[role="' + roleAttr + '"]', confidence: 82, level: 'simple' });
             }
 
-            if (id) selectors.push({ type: 'SVG by ID', value: 'svg#' + id, confidence: 100, level: 'simple' });
-            if (ariaLabel) selectors.push({ type: 'SVG by Aria-Label', value: 'svg[aria-label="' + ariaLabel + '"]', confidence: 95, level: 'simple' });
-            if (classList && classList.length > 0) selectors.push({ type: 'SVG by Class', value: 'svg.' + classList[0], confidence: 85, level: 'medium' });
-            if (viewBox) selectors.push({ type: 'SVG by ViewBox', value: 'svg[viewBox="' + viewBox + '"]', confidence: 90, level: 'simple' });
-            if (widthAttr && heightAttr) selectors.push({ type: 'SVG by Size', value: 'svg[width="' + widthAttr + '"][height="' + heightAttr + '"]', confidence: 70, level: 'medium' });
-            selectors.push({ type: 'SVG Element [Basic]', value: 'svg', confidence: 25, level: 'advanced' });
+            // ===== Strategy 2: With HTML ancestor context (very important for icon SVGs) =====
+            if (htmlAncestors.length > 0) {
+                for (let depth = 1; depth <= Math.min(3, htmlAncestors.length); depth++) {
+                    const ancestorPrefix = buildAncestorSelector(htmlAncestors, depth);
+                    if (!ancestorPrefix) continue;
+
+                    if (isSvgTag) {
+                        selectors.push({
+                            type: `SVG by ${depth}-ancestor + svg`,
+                            value: ancestorPrefix + 'svg',
+                            confidence: 88 - (depth - 1) * 5,
+                            level: depth === 1 ? 'simple' : 'medium'
+                        });
+
+                        if (svgViewBox) {
+                            selectors.push({
+                                type: `SVG by ${depth}-ancestor + viewBox`,
+                                value: ancestorPrefix + 'svg[viewBox="' + svgViewBox + '"]',
+                                confidence: 92 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                        if (svgClasses.length > 0) {
+                            selectors.push({
+                                type: `SVG by ${depth}-ancestor + class`,
+                                value: ancestorPrefix + 'svg.' + cssEsc(svgClasses[0]),
+                                confidence: 90 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                    } else {
+                        selectors.push({
+                            type: `SVG Child by ${depth}-ancestor`,
+                            value: ancestorPrefix + tag,
+                            confidence: 85 - (depth - 1) * 5,
+                            level: depth === 1 ? 'simple' : 'medium'
+                        });
+
+                        if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
+                            selectors.push({
+                                type: `SVG Child by ${depth}-ancestor + stroke`,
+                                value: ancestorPrefix + tag + '[stroke="' + strokeAttr + '"]',
+                                confidence: 80 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                        if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
+                            selectors.push({
+                                type: `SVG Child by ${depth}-ancestor + fill`,
+                                value: ancestorPrefix + tag + '[fill="' + fillAttr + '"]',
+                                confidence: 75 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                    }
+                }
+
+                // Strategy: ancestor with nth-child for disambiguation
+                const firstAnc = htmlAncestors[0];
+                if (firstAnc) {
+                    const firstAncClasses = getClassList(firstAnc).filter(isMeaningfulClass);
+                    const nthIdx = getNthChildIndex(firstAnc);
+                    if (nthIdx > 0 && firstAncClasses.length > 0) {
+                        const ancSel = firstAnc.tagName.toLowerCase() + '.' + cssEsc(firstAncClasses[0]) + ':nth-child(' + nthIdx + ')';
+                        selectors.push({
+                            type: 'SVG by ancestor:nth-child',
+                            value: ancSel + ' ' + (isSvgTag ? 'svg' : tag),
+                            confidence: 86,
+                            level: 'advanced'
+                        });
+                    }
+                }
+            }
+
+            // ===== Strategy 3: SVG internal attributes =====
+            if (isSvgTag) {
+                if (viewBox) {
+                    selectors.push({ type: 'SVG by ViewBox', value: 'svg[viewBox="' + viewBox + '"]', confidence: 80, level: 'simple' });
+                }
+                if (classList.length > 0) {
+                    selectors.push({ type: 'SVG by Class', value: 'svg.' + cssEsc(classList[0]), confidence: 75, level: 'medium' });
+                    if (classList.length >= 2) {
+                        selectors.push({ type: 'SVG by Multi-Class', value: 'svg.' + cssEsc(classList[0]) + '.' + cssEsc(classList[1]), confidence: 85, level: 'medium' });
+                    }
+                }
+                if (widthAttr && heightAttr) {
+                    selectors.push({ type: 'SVG by Size', value: 'svg[width="' + widthAttr + '"][height="' + heightAttr + '"]', confidence: 60, level: 'medium' });
+                }
+                if (viewBox && fillAttr && fillAttr !== 'currentColor') {
+                    selectors.push({ type: 'SVG by ViewBox+Fill', value: 'svg[viewBox="' + viewBox + '"][fill="' + fillAttr + '"]', confidence: 84, level: 'medium' });
+                }
+                const svgPosIdx = getSiblingIndex(element);
+                if (svgPosIdx > 0) {
+                    selectors.push({ type: 'SVG by nth-of-type', value: 'svg:nth-of-type(' + svgPosIdx + ')', confidence: 45, level: 'advanced' });
+                }
+            } else {
+                if (classList.length > 0) {
+                    classList.forEach(cls => {
+                        selectors.push({ type: 'SVG Child by Class', value: 'svg ' + tag + '.' + cssEsc(cls), confidence: 72, level: 'medium' });
+                    });
+                    if (classList.length >= 2) {
+                        selectors.push({
+                            type: 'SVG Child by Multi-Class',
+                            value: 'svg ' + tag + '.' + cssEsc(classList[0]) + '.' + cssEsc(classList[1]),
+                            confidence: 82,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
+                    selectors.push({ type: 'SVG Child by Stroke', value: 'svg ' + tag + '[stroke="' + strokeAttr + '"]', confidence: 55, level: 'medium' });
+                }
+                if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
+                    selectors.push({ type: 'SVG Child by Fill', value: 'svg ' + tag + '[fill="' + fillAttr + '"]', confidence: 48, level: 'medium' });
+                }
+                if (strokeAttr && fillAttr && strokeAttr !== 'currentColor' && fillAttr !== 'currentColor') {
+                    selectors.push({
+                        type: 'SVG Child by Stroke+Fill',
+                        value: 'svg ' + tag + '[stroke="' + strokeAttr + '"][fill="' + fillAttr + '"]',
+                        confidence: 72,
+                        level: 'medium'
+                    });
+                }
+
+                if (tag === 'circle') {
+                    const cx = element.getAttribute('cx'), cy = element.getAttribute('cy'), r = element.getAttribute('r');
+                    if (cx && cy && r) {
+                        selectors.push({
+                            type: 'SVG Circle by cx+cy+r',
+                            value: 'svg circle[cx="' + cx + '"][cy="' + cy + '"][r="' + r + '"]',
+                            confidence: 78,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if ((tag === 'rect' || tag === 'image')) {
+                    const x = element.getAttribute('x'), y = element.getAttribute('y');
+                    const w = element.getAttribute('width'), h = element.getAttribute('height');
+                    if (x && y && w && h) {
+                        selectors.push({
+                            type: 'SVG ' + tag + ' by position+size',
+                            value: 'svg ' + tag + '[x="' + x + '"][y="' + y + '"][width="' + w + '"][height="' + h + '"]',
+                            confidence: 78,
+                            level: 'medium'
+                        });
+                    }
+                }
+
+                if (svgViewBox) {
+                    selectors.push({
+                        type: 'SVG Child by Parent ViewBox',
+                        value: 'svg[viewBox="' + svgViewBox + '"] ' + tag,
+                        confidence: 70,
+                        level: 'simple'
+                    });
+                }
+                if (svgId) {
+                    selectors.push({
+                        type: 'SVG Child by Parent SVG ID',
+                        value: 'svg#' + cssEsc(svgId) + ' ' + tag,
+                        confidence: 88,
+                        level: 'simple'
+                    });
+                }
+
+                const childPosIdx = getSiblingIndex(element);
+                if (childPosIdx > 0) {
+                    if (svgViewBox) {
+                        selectors.push({
+                            type: 'SVG Child by ViewBox+nth',
+                            value: 'svg[viewBox="' + svgViewBox + '"] ' + tag + ':nth-of-type(' + childPosIdx + ')',
+                            confidence: 80,
+                            level: 'advanced'
+                        });
+                    }
+                    selectors.push({
+                        type: 'SVG Child by nth-of-type',
+                        value: 'svg ' + tag + ':nth-of-type(' + childPosIdx + ')',
+                        confidence: 42,
+                        level: 'advanced'
+                    });
+                }
+            }
+
+            // ===== Strategy 4: Basic fallback =====
+            if (isSvgTag) {
+                selectors.push({ type: 'SVG Element [Basic]', value: 'svg', confidence: 20, level: 'advanced' });
+            } else {
+                selectors.push({ type: 'SVG Child [Basic]', value: 'svg ' + tag, confidence: 25, level: 'advanced' });
+            }
+
             return selectors;
         }
 
@@ -1290,6 +2114,9 @@
             } else if (elementType === 'svg') {
                 if (value.includes('data-testid')) score = 95;
                 else if (value.includes('aria-label')) score = 90;
+                else if (value.includes('#') || value.includes('@id=')) score = 90;
+                else if (value.includes('[viewBox') || value.includes('@viewBox')) score = 80;
+                else if (value.includes('svg') && value.includes('.')) score = 75;
                 else if (value.includes('parent') && value.includes('id')) score = 85;
             } else if (elementType === 'checkbox') {
                 if (value.includes('name=') || value.includes('@name=')) score = 95;
@@ -1434,19 +2261,6 @@
                         grouped[type][level] = grouped[type][level].slice(0, maxLocators[level]);
                     }
                 });
-            });
-            
-            console.log('📊 Final grouped locators:', {
-                xpath: {
-                    simple: grouped.xpath.simple.length,
-                    medium: grouped.xpath.medium.length,
-                    advanced: grouped.xpath.advanced.length
-                },
-                css: {
-                    simple: grouped.css.simple.length,
-                    medium: grouped.css.medium.length,
-                    advanced: grouped.css.advanced.length
-                }
             });
             
             return grouped;
@@ -1738,6 +2552,156 @@
         })();
     }
 
+    function selectElementGroup(element) {
+        if (!locatorGenerator) return;
+
+        var groupLocator = generateGroupLocator(element);
+
+        var matchingElements = [];
+        try {
+            if (groupLocator.type === 'css') {
+                var found = document.querySelectorAll(groupLocator.value);
+                for (var i = 0; i < found.length; i++) {
+                    if (!DOM_ISOLATION_CONFIG.shouldExclude(found[i])) {
+                        matchingElements.push(found[i]);
+                    }
+                }
+            } else {
+                var xpResult = document.evaluate(groupLocator.value, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                for (var j = 0; j < xpResult.snapshotLength; j++) {
+                    var xpEl = xpResult.snapshotItem(j);
+                    if (xpEl && !DOM_ISOLATION_CONFIG.shouldExclude(xpEl)) {
+                        matchingElements.push(xpEl);
+                    }
+                }
+            }
+        } catch (e) {
+            matchingElements = [element];
+        }
+
+        var elementData = {
+            tag: element.tagName.toLowerCase(),
+            id: element.id || '',
+            className: element.className || '',
+            text: '',
+            locators: null,
+            localHeuristic: {
+                css: groupLocator.type === 'css' ? groupLocator.value : null,
+                xpath: groupLocator.type === 'xpath' ? groupLocator.value : null,
+                method: groupLocator.method + ' (group, ' + matchingElements.length + ' elements)',
+                type: groupLocator.type
+            },
+            timestamp: new Date().toLocaleString(),
+            isList: true,
+            groupCount: matchingElements.length
+        };
+
+        elementHistory.push(elementData);
+        currentHistoryIndex = elementHistory.length - 1;
+
+        sendToSidebar('ELEMENT_SELECTED', elementData);
+        sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: elementHistory });
+        removeHighlight();
+    }
+
+    function generateGroupLocator(element) {
+        var tag = element.tagName.toLowerCase();
+        var isSvg = locatorGenerator && locatorGenerator.isSVGElement && locatorGenerator.isSVGElement(element);
+
+        function escCss(s) { try { return CSS.escape(s); } catch(e) { return s.replace(/"/g,'\\"'); } }
+
+        function qsaCount(sel) {
+            try {
+                var els = document.querySelectorAll(sel);
+                var count = 0;
+                for (var i = 0; i < els.length; i++) {
+                    if (!DOM_ISOLATION_CONFIG.shouldExclude(els[i])) count++;
+                }
+                return count;
+            } catch(e) { return 0; }
+        }
+
+        var best = { type: 'css', value: tag, method: 'tag', count: 0 };
+
+        var cls = (typeof element.className === 'string') ? element.className.trim().split(/\s+/).filter(function(c){ return c.length > 0; }) : [];
+
+        if (cls.length > 0) {
+            var singleClassSel = tag + '.' + escCss(cls[0]);
+            var c1 = qsaCount(singleClassSel);
+            if (c1 >= 2 && c1 <= 100) {
+                best = { type: 'css', value: singleClassSel, method: 'tag+class', count: c1 };
+            }
+
+            if (cls.length >= 2) {
+                var multiClassSel = tag + '.' + cls.slice(0, 2).map(escCss).join('.');
+                var c2 = qsaCount(multiClassSel);
+                if (c2 >= 2 && c2 <= 100 && c2 < (best.count || 999)) {
+                    best = { type: 'css', value: multiClassSel, method: 'tag+classes', count: c2 };
+                }
+            }
+        }
+
+        var stableAttrs = ['data-testid', 'data-cy', 'data-test', 'data-qa', 'role', 'type', 'name'];
+        for (var a = 0; a < stableAttrs.length; a++) {
+            var attr = stableAttrs[a];
+            var val = element.getAttribute(attr);
+            if (val) {
+                var attrSel = tag + '[' + attr + '="' + escCss(val) + '"]';
+                var ac = qsaCount(attrSel);
+                if (ac >= 2 && ac <= 100 && ac < (best.count || 999)) {
+                    best = { type: 'css', value: attrSel, method: attr, count: ac };
+                }
+            }
+        }
+
+        var parent = element.parentElement;
+        if (parent) {
+            var pId = parent.id;
+            if (pId) {
+                var parentScoped = '#' + escCss(pId) + ' > ' + tag;
+                var pc = qsaCount(parentScoped);
+                if (pc >= 2 && pc <= 100 && pc < (best.count || 999)) {
+                    best = { type: 'css', value: parentScoped, method: 'parent>#id > tag', count: pc };
+                }
+            }
+
+            var pTag = parent.tagName.toLowerCase();
+            var pClass = (typeof parent.className === 'string') ? parent.className.trim().split(/\s+/).filter(function(c){ return c.length > 0 && !/^\d/.test(c); })[0] : null;
+            if (pClass) {
+                var parentClassScoped = pTag + '.' + escCss(pClass) + ' > ' + tag;
+                var pclsc = qsaCount(parentClassScoped);
+                if (pclsc >= 2 && pclsc <= 100 && pclsc < (best.count || 999)) {
+                    best = { type: 'css', value: parentClassScoped, method: 'parent.class > tag', count: pclsc };
+                }
+            }
+        }
+
+        if (isSvg) {
+            var svgParent = element.closest('svg');
+            if (svgParent) {
+                var viewBox = svgParent.getAttribute('viewBox');
+                if (viewBox) {
+                    var svgScoped = 'svg[viewBox="' + escCss(viewBox) + '"] ' + tag;
+                    var svgC = qsaCount(svgScoped);
+                    if (svgC >= 2 && svgC <= 100 && svgC < (best.count || 999)) {
+                        best = { type: 'css', value: svgScoped, method: 'svg[viewBox] tag', count: svgC };
+                    }
+                }
+            }
+        }
+
+        var tagCount = qsaCount(tag);
+        if (tagCount >= 2 && tagCount <= 50 && best.count === 0) {
+            best = { type: 'css', value: tag, method: 'tag (all)', count: tagCount };
+        }
+
+        if (best.count === 0 || best.count === 1) {
+            best = { type: 'css', value: tag + '.' + (cls[0] || 'group'), method: 'suggested class group', count: 0 };
+        }
+
+        return best;
+    }
+
     // Captures a compact DOM structure snapshot for AI context.
     // Traverses visible body elements and records tag, id, class, text for top 3 layers.
     function capturePageSnapshot() {
@@ -1916,6 +2880,62 @@
                 try { return document.evaluate('count(' + xp + ')', document, null, XPathResult.NUMBER_TYPE, null).numberValue; } catch(e) { return 999; }
             }
 
+            // Detect SVG element (including children of SVG)
+            var isSvgElement = false;
+            try {
+                if (element.namespaceURI === 'http://www.w3.org/2000/svg') isSvgElement = true;
+            } catch(e) {}
+            if (!isSvgElement) {
+                try {
+                    var p = element.parentElement;
+                    while (p && p.tagName) {
+                        if (p.tagName.toLowerCase() === 'svg') { isSvgElement = true; break; }
+                        p = p.parentElement;
+                    }
+                } catch(e) {}
+            }
+
+            // Helper: get class list safely (SVG elements have SVGAnimatedString for className)
+            function getClassList(el) {
+                try {
+                    if (el.classList && typeof el.classList === 'object' && el.classList.length !== undefined) {
+                        return Array.from(el.classList);
+                    }
+                } catch(e) {}
+                try {
+                    var cls = el.getAttribute('class');
+                    if (cls && typeof cls === 'string') {
+                        return cls.trim().split(/\s+/).filter(Boolean);
+                    }
+                } catch(e) {}
+                return [];
+            }
+
+            // Find parent SVG element
+            function getParentSvg(el) {
+                try {
+                    var cur = el;
+                    while (cur && cur.tagName) {
+                        if (cur.tagName.toLowerCase() === 'svg') return cur;
+                        cur = cur.parentElement;
+                    }
+                } catch(e) {}
+                return null;
+            }
+
+            // Get element position index among siblings with same tag
+            function getSiblingIndex(el) {
+                try {
+                    var parent = el.parentElement;
+                    if (!parent) return -1;
+                    var siblings = parent.querySelectorAll(el.tagName.toLowerCase());
+                    for (var i = 0; i < siblings.length; i++) {
+                        if (siblings[i].isSameNode(el)) return i + 1;
+                    }
+                } catch(e) {}
+                return -1;
+            }
+
             // Try CSS selector: if unique and verified, return immediately.
             // If count > 1, try parent-scoping up to 6 levels.
             function tryCss(sel, method) {
@@ -1934,7 +2954,7 @@
                         scoped = '#' + esc(p.id) + ' ' + sel;
                         if (qsaCount(scoped) === 1 && verifyCss(scoped)) return { locator: scoped, type: 'css', method: method + ' (#' + p.id + ')' };
                     }
-                    var pcls = (typeof p.className === 'string') ? p.className.trim().split(/\s+/).filter(function(c){ return c.length>0 && !/^\d/.test(c); }) : [];
+                    var pcls = getClassList(p).filter(function(c){ return c.length>0 && !/^\d/.test(c); });
                     if (pcls.length === 1 && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(pcls[0])) {
                         var sc2 = p.tagName.toLowerCase() + '.' + esc(pcls[0]) + ' > ' + sel;
                         if (qsaCount(sc2) === 1 && verifyCss(sc2)) return { locator: sc2, type: 'css', method: method + ' (.' + pcls[0] + ' >)' };
@@ -1960,7 +2980,7 @@
                             var scoped = '//*[@id="' + xpEsc(p.id) + '"]' + xp.substring(1);
                             if (xpCount(scoped) === 1 && verifyXp(scoped)) return { locator: scoped, type: 'xpath', method: method + ' (#' + p.id + ')' };
                         }
-                        var pcls = (typeof p.className === 'string') ? p.className.trim().split(/\s+/).filter(function(c){ return c.length>0 && !/^\d/.test(c); }) : [];
+                        var pcls = getClassList(p).filter(function(c){ return c.length>0 && !/^\d/.test(c); });
                         if (pcls.length === 1 && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(pcls[0])) {
                             var sc2 = '//' + p.tagName.toLowerCase() + '[contains(@class,"' + xpEsc(pcls[0]) + '")]' + xp.substring(1);
                             if (xpCount(sc2) === 1 && verifyXp(sc2)) return { locator: sc2, type: 'xpath', method: method + ' (.' + pcls[0] + ')' };
@@ -2159,7 +3179,7 @@
             }
 
             // 9. class-based (scoped under parent)
-            var clsList = (typeof element.className === 'string') ? element.className.trim().split(/\s+/) : [];
+            var clsList = getClassList(element);
             var goodCls = clsList.filter(function(c) {
                 return c.length > 0 && !/^\d/.test(c) && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(c);
             });
@@ -2169,6 +3189,102 @@
                 if (r) return r;
                 r = tryXp('//' + tag + '[contains(@class,"' + xpEsc(goodCls[0]) + '")]', 'tag+class');
                 if (r) return r;
+            }
+
+            // 10. SVG-specific strategies (for SVG elements and their children)
+            if (isSvgElement) {
+                var parentSvg = getParentSvg(element);
+
+                if (parentSvg) {
+                    var parentViewBox = parentSvg.getAttribute('viewBox');
+                    var parentSvgId = parentSvg.id || parentSvg.getAttribute('id');
+
+                    // Strategy: parent SVG viewBox + tag
+                    if (parentViewBox) {
+                        var vbSel = 'svg[viewBox="' + parentViewBox + '"] ' + tag;
+                        var vbR = tryCss(vbSel, 'svg[viewBox] tag');
+                        if (vbR) return vbR;
+                        var vbXp = '//svg[@viewBox="' + xpEsc(parentViewBox) + '"]//' + tag;
+                        vbR = tryXp(vbXp, 'svg[viewBox]//tag');
+                        if (vbR) return vbR;
+                    }
+
+                    // Strategy: parent SVG ID + tag
+                    if (parentSvgId) {
+                        var idSel = 'svg#' + esc(parentSvgId) + ' ' + tag;
+                        var idR = tryCss(idSel, 'svg#id tag');
+                        if (idR) return idR;
+                    }
+
+                    // Strategy: SVG-specific attributes
+                    var stroke = element.getAttribute('stroke');
+                    var fill = element.getAttribute('fill');
+                    var strokeWidth = element.getAttribute('stroke-width');
+
+                    if (stroke) {
+                        var strokeSel = tag + '[stroke="' + stroke + '"]';
+                        var strokeR = tryCss(strokeSel, 'svg-tag[stroke]');
+                        if (strokeR) return strokeR;
+                    }
+
+                    if (fill && tag !== 'svg') {
+                        var fillSel = tag + '[fill="' + fill + '"]';
+                        var fillR = tryCss(fillSel, 'svg-tag[fill]');
+                        if (fillR) return fillR;
+                    }
+
+                    if (stroke && fill && tag !== 'svg') {
+                        var comboSel = tag + '[stroke="' + stroke + '"][fill="' + fill + '"]';
+                        var comboR = tryCss(comboSel, 'svg-tag[stroke+fill]');
+                        if (comboR) return comboR;
+                    }
+
+                    // Strategy: circle by cx+cy+r
+                    if (tag === 'circle') {
+                        var cx = element.getAttribute('cx');
+                        var cy = element.getAttribute('cy');
+                        var rad = element.getAttribute('r');
+                        if (cx && cy && rad) {
+                            var circSel = 'circle[cx="' + cx + '"][cy="' + cy + '"][r="' + rad + '"]';
+                            var circR = tryCss(circSel, 'circle[cx+cy+r]');
+                            if (circR) return circR;
+                        }
+                    }
+
+                    // Strategy: rect by x+y+width+height
+                    if (tag === 'rect' || tag === 'image') {
+                        var rx = element.getAttribute('x');
+                        var ry = element.getAttribute('y');
+                        var rw = element.getAttribute('width');
+                        var rh = element.getAttribute('height');
+                        if (rx && ry && rw && rh) {
+                            var rectSel = tag + '[x="' + rx + '"][y="' + ry + '"][width="' + rw + '"][height="' + rh + '"]';
+                            var rectR = tryCss(rectSel, 'rect[x+y+w+h]');
+                            if (rectR) return rectR;
+                        }
+                    }
+
+                    // Strategy: path by d (partial)
+                    if (tag === 'path') {
+                        var dAttr = element.getAttribute('d');
+                        if (dAttr && dAttr.length > 5) {
+                            var partialD = dAttr.slice(0, 15);
+                            var pathXp = '//svg[@viewBox="' + xpEsc(parentViewBox || '') + '"]//path[starts-with(@d, "' + xpEsc(partialD) + '")]';
+                            var pathR = tryXp(pathXp, 'path[starts-with(d)]');
+                            if (pathR) return pathR;
+                        }
+                    }
+
+                    // Strategy: position index under parent SVG
+                    var sibIdx = getSiblingIndex(element);
+                    if (sibIdx > 0) {
+                        if (parentViewBox) {
+                            var nthSel = 'svg[viewBox="' + parentViewBox + '"] ' + tag + ':nth-of-type(' + sibIdx + ')';
+                            var nthR = tryCss(nthSel, 'svg[viewBox] tag:nth-of-type');
+                            if (nthR) return nthR;
+                        }
+                    }
+                }
             }
 
             // No reliable locator found
@@ -2205,26 +3321,33 @@
         event.stopPropagation();
         event.stopImmediatePropagation();
 
-        let element = event.target;
+        let element = getElementFromShadowRoot(event);
 
-        // SVG promotion — same logic as handleMouseOver so SVG children like <circle>, <rect>, <path> etc. are captured as part of their SVG/group parent
+        // SVG promotion — promote SVG child elements to nearest meaningful container
         const svgTagNames = new Set(['circle','rect','path','g','line','polygon','polyline','text','tspan','use','image','mask','clipPath','defs','foreignObject']);
         if (element && element.tagName) {
             const tag = element.tagName.toLowerCase();
             if (svgTagNames.has(tag) || (element.namespaceURI && element.namespaceURI === 'http://www.w3.org/2000/svg')) {
+                let foundGroup = null;
                 let cur = element;
                 while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') {
                     const t = cur.tagName.toLowerCase();
                     if (t === 'g' && (cur.id || cur.getAttribute('class') || cur.getAttribute('aria-label'))) {
-                        element = cur;
+                        foundGroup = cur;
                         break;
                     }
                     cur = cur.parentElement;
                 }
-                if (!element || element.tagName.toLowerCase() === 'svg' || svgTagNames.has(element.tagName.toLowerCase())) {
-                    let r = event.target;
-                    while (r && r.tagName && r.tagName.toLowerCase() !== 'svg') r = r.parentElement;
-                    if (r) element = r;
+                if (foundGroup) {
+                    element = foundGroup;
+                } else {
+                    let svgRoot = event.target;
+                    while (svgRoot && svgRoot.tagName && svgRoot.tagName.toLowerCase() !== 'svg') {
+                        svgRoot = svgRoot.parentElement;
+                    }
+                    if (svgRoot) {
+                        element = svgRoot;
+                    }
                 }
             }
         }
@@ -2234,17 +3357,21 @@
         if (element.closest("#elementLocatorOverlay")) return;
         if (DOM_ISOLATION_CONFIG.shouldExclude(element)) return;
 
-        // Select element — do NOT close locator mode (support continuous multi-element selection)
-        selectElement(element);
+        var isGroupPick = event.ctrlKey || event.metaKey;
 
-        // Re-apply highlight on selected element for visual feedback
+        if (isGroupPick) {
+            selectElementGroup(element);
+        } else {
+            selectElement(element);
+        }
+
         highlightElement(element);
     }
 
     function handleMouseOver(event) {
         if (!isLocatorModeActive) return;
         if (window.location.origin !== currentOrigin) { toggleLocatorMode(); return; }
-        let element = event.target;
+        let element = getElementFromShadowRoot(event);
 
         // Walk up to find a pickable element, but prefer SVG container over its internals
         // For <circle>/<rect>/<path>/<g>/<line>/<polygon>/<polyline>/<text>/<tspan> inside <svg>,
@@ -2252,28 +3379,28 @@
         const svgTagNames = new Set(['circle','rect','path','g','line','polygon','polyline','text','tspan','use','image','mask','clipPath','defs','foreignObject']);
         if (element && element.tagName) {
             const tag = element.tagName.toLowerCase();
-            if (svgTagNames.has(tag)) {
+            if (svgTagNames.has(tag) || (element.namespaceURI && element.namespaceURI === 'http://www.w3.org/2000/svg')) {
+                let foundGroup = null;
                 let cur = element;
                 while (cur && cur.tagName && cur.tagName.toLowerCase() !== 'svg') {
                     const t = cur.tagName.toLowerCase();
-                    // Prefer a named group
                     if (t === 'g' && (cur.id || cur.getAttribute('class') || cur.getAttribute('aria-label'))) {
-                        element = cur;
+                        foundGroup = cur;
                         break;
                     }
                     cur = cur.parentElement;
                 }
-                if (!element || !element.tagName || !svgTagNames.has(element.tagName.toLowerCase()) || element.tagName.toLowerCase() === 'svg') {
-                    // Fallback: pick the <svg> root
-                    let r = element;
-                    while (r && r.tagName && r.tagName.toLowerCase() !== 'svg') r = r.parentElement;
-                    if (r) element = r;
+                if (foundGroup) {
+                    element = foundGroup;
+                } else {
+                    let svgRoot = event.target;
+                    while (svgRoot && svgRoot.tagName && svgRoot.tagName.toLowerCase() !== 'svg') {
+                        svgRoot = svgRoot.parentElement;
+                    }
+                    if (svgRoot) {
+                        element = svgRoot;
+                    }
                 }
-            } else if (element.namespaceURI === 'http://www.w3.org/2000/svg') {
-                // Defensive: also catch namespaceURI case (older code path)
-                let r = element;
-                while (r && r.tagName && r.tagName.toLowerCase() !== 'svg') r = r.parentElement;
-                if (r) element = r;
             }
         }
 
@@ -2423,9 +3550,11 @@
     
 
     function handleSidebarMessage(type, data) {
+        console.log('[Content] handleSidebarMessage:', type);
         switch (type) {
-            case 'CLEAR_CAPTURED_ELEMENTS': elementHistory = []; currentHistoryIndex = -1; sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: [] }); break;
-            case 'TOGGLE_LOCATOR_MODE': toggleLocatorMode(); break;
+            case 'CLEAR_CAPTURED_ELEMENTS': elementHistory = []; currentHistoryIndex = -1; break;
+            case 'ELEMENT_HISTORY_UPDATED': elementHistory = (data && data.elements) || []; currentHistoryIndex = elementHistory.length - 1; break;
+            case 'TOGGLE_LOCATOR_MODE': console.log('[Content] TOGGLE_LOCATOR_MODE received'); toggleLocatorMode(); break;
             case 'CLOSE_SIDEBAR': closeSidebar(); break;
             case 'COPY_LOCATOR': copyToClipboard(data.locator); break;
             case 'REQUEST_AI_SUGGESTIONS': requestAiSuggestions(data); break;
@@ -2508,6 +3637,9 @@
 
     window.addEventListener('message', function (event) {
         try {
+            if (sidebarIframe && sidebarIframe.contentWindow && event.source === sidebarIframe.contentWindow) {
+                return;
+            }
             const { type, data } = event.data || {};
             if (type === 'VALIDATE_LOCATOR') {
                 const { locator, locatorType, locatorId } = data;
@@ -2579,10 +3711,6 @@
         }
         if (request.type === "CANCEL_AI_REQUESTS") {
             safeRuntimeSendMessage({ type: 'CANCEL_AI_REQUESTS' });
-            doSend({ ok: true }); return false;
-        }
-        if (request.type === "TOGGLE_LOCATOR_MODE") {
-            toggleLocatorMode();
             doSend({ ok: true }); return false;
         }
 
@@ -2665,6 +3793,7 @@
 
     // Manages event listeners for locator mode.
     function toggleLocatorMode() {
+        console.log('[Content] toggleLocatorMode called, current state:', isLocatorModeActive);
         isLocatorModeActive = !isLocatorModeActive;
         const mouseOptions = { passive: false };
         const clickOptions = { capture: true, passive: false };
@@ -2674,14 +3803,17 @@
             addEventListenerSafely(document, "mouseover", handleMouseOver, mouseOptions);
             addEventListenerSafely(document, "mouseout", handleMouseOut, mouseOptions);
             addEventListenerSafely(document, "click", handleElementClick, clickOptions);
+            attachListenersToIframes();
             listenersAttached = true;
             document.body.style.cursor = "crosshair";
+            console.log('[Content] Locator mode activated - listeners added');
             // Send page snapshot immediately when entering pick mode so the sidebar has the full page context ready for AI
             (function(){ try { var sn = (typeof capturePageSnapshot==='function')?capturePageSnapshot():null; var ariaSn = (typeof captureAriaSnapshot==='function')?captureAriaSnapshot():null; sendToSidebar('PAGE_SNAPSHOT', { snapshot: sn, ariaSnapshot: ariaSn }); } catch(e){} })();
         } else {
             removeAllEventListeners();
             document.body.style.cursor = "";
             removeHighlight();
+            console.log('[Content] Locator mode deactivated - listeners removed');
         }
 
         sendToSidebar("LOCATOR_MODE_CHANGED", { active: isLocatorModeActive });

@@ -1,92 +1,135 @@
-# Element Locator 
+# Web Element Selector
 
-![Chrome Web Store](https://img.shields.io/chrome-web-store/v/YOUR_EXTENSION_ID?style=for-the-badge&logo=google-chrome&label=Chrome%20Web%20Store)
-![License](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)
+一款强大的网页元素定位工具，用于快速生成 CSS 选择器和 XPath 表达式。
 
-## 🚀 Genel Bakış
+## 功能特性
 
-**Element Locator ** Chrome eklentisi, web otomasyonu ve test süreçlerinde element bulma işlemlerini devrim niteliğinde kolaylaştıran güçlü bir araçtır. Geleneksel element bulucuların ötesine geçerek, yapay zeka destekli akıllı XPath ve CSS seçici üretimi sunar. Bu eklenti, ChatGPT, Gemini, DeepSeek ve Claude gibi önde gelen yapay zeka modelleriyle entegre çalışarak, en karmaşık web sayfalarında bile güvenilir ve sağlam locator'lar oluşturmanıza yardımcı olur.
+### 核心功能
 
-Test otomasyon mühendisleri, QA analistleri ve web geliştiricileri için tasarlanan bu eklenti, manuel locator yazma zahmetini ortadan kaldırır, zaman kazandırır ve otomasyon betiklerinin kararlılığını artırır. Elementleri sezgisel bir şekilde seçin, anında çeşitli locator önerileri alın ve yapay zekanın gücüyle en uygun olanı seçin.
+- **智能元素选择**：点击页面元素即可生成多种定位器
+- **多级别定位器**：提供 Simple、Medium、Advanced 三个级别的定位器
+- **CSS 优先**：优先生成 CSS 选择器，同时提供 XPath 备选
+- **批量选择**：按住 Ctrl/Cmd + 点击可选择一组相似元素
+- **一键复制**：点击定位器或复制按钮即可复制到剪贴板
 
-## ✨ Özellikler
+### 元素类型支持
 
-### 🎯 Akıllı Element Seçimi ve Vurgulama
+- ✅ 普通 HTML 元素
+- ✅ SVG 元素及其子元素（path、rect、circle 等）
+- ✅ 表单元素（input、button、checkbox 等）
+- ✅ 链接、图片、表格、列表
+- ✅ Shadow DOM（open 模式）
+- ✅ 同域 iframe 内的元素
 
-Eklenti, web sayfasındaki herhangi bir HTML elementini kolayca seçmenizi sağlayan sezgisel bir seçim modu sunar. Seçilen elementler, tipine (örneğin, e-ticaret butonu, checkbox, SVG, resim, ikon) göre farklı renklerle dinamik olarak vurgulanır ve ilgili element tipini belirten küçük bir etiketle işaretlenir. Bu görsel geri bildirim, doğru elementi seçtiğinizden emin olmanızı sağlar. Ayrıca, eklentinin kendi arayüz elementleri (yan panel, vurgulama katmanları) seçim sürecinden akıllıca hariç tutularak kesintisiz bir kullanıcı deneyimi sunulur.
+### SVG 元素优化
 
-### 🔍 Gelişmiş Locator Üretimi
+- **祖先元素链策略**：优先使用父元素/祖先元素的 class/id 来精确定位 SVG
+- **智能 class 过滤**：自动过滤随机生成的无意义 class
+- **多层级定位器**：使用 1-3 层祖先元素组合提高定位精度
+- **位置索引**：同类型多元素时使用 nth-child/position 区分
 
-Eklentinin kalbinde, seçilen HTML elementi için kapsamlı ve çeşitli XPath ve CSS seçicileri üreten gelişmiş bir `Unified Locator Generator` bulunur. Bu jeneratör, elementin ID'si, sınıfı, metin içeriği ve diğer nitelikleri gibi birçok özelliğini analiz ederek en uygun locator'ları belirler. Üretilen locator'lar üç ana seviyede sınıflandırılır:
+### 界面功能
 
-- **Temel Locator'lar**: `id`, `name`, `data-testid`, `aria-label`, `title`, `alt`, `href`, `src`, `type`, `placeholder`, `value` gibi benzersiz ve doğrudan niteliklere dayalı basit ve yüksek güvenilirlikli seçiciler.
-- **Orta Seviye Locator'lar**: Metin içeriğinin bir kısmını içeren (`contains(text())`), dinamik ID veya sınıf ön eklerini kullanan (`starts-with(@id)`), kısmi sınıf eşleşmeleri (`class*=`) veya ebeveyn-çocuk ilişkileri gibi daha karmaşık senaryolar için uygun seçiciler.
-- **Gelişmiş Locator'lar**: XPath eksenleri (`following-sibling`, `ancestor`), konumsal seçiciler (`nth-of-type`, `position()`) ve çoklu nitelik kombinasyonları gibi daha karmaşık ve esnek otomasyon ihtiyaçları için tasarlanmış seçiciler.
+- **Captured Elements 列表**：记录所有已选择的元素
+- **可折叠面板**：点击标题栏可展开/收起捕获元素列表
+- **列表编辑**：List 类型元素支持编辑 Text 字段
+- **批量复制**：一键复制所有元素信息
+- **Toast 提示**：复制成功后显示提示消息
 
-Eklenti ayrıca, SVG elementleri, ikonlar ve e-ticaret sitelerindeki özel butonlar gibi belirli element tipleri için özel olarak optimize edilmiş locator üretim algoritmalarına sahiptir. Bu, özellikle dinamik ve karmaşık web arayüzlerinde sağlam locator'lar elde etmeyi kolaylaştırır. Üretilen her locator, benzersizliği ve doğruluğu açısından doğrulanır ve güvenilirlik, performans ve okunabilirlik gibi kriterlere göre önceliklendirilir. Sık kullanılan locator'lar için bir önbellekleme mekanizması da performansı artırır.
+## 安装方式
 
-### 🧠 Yapay Zeka Destekli Locator Önerileri
+### 开发者模式安装
 
-Bu eklentiyi benzerlerinden ayıran en önemli özellik, yapay zeka entegrasyonudur. Eklenti, seçilen elementin detaylı HTML bilgilerini önde gelen yapay zeka modellerine (ChatGPT, Gemini, DeepSeek, Claude) göndererek, insan benzeri akıl yürütme yeteneğiyle alternatif ve optimize edilmiş locator önerileri alabilir. Bu, özellikle standart algoritmaların zorlandığı durumlarda veya daha yaratıcı ve dayanıklı locator'lara ihtiyaç duyulduğunda paha biçilmez bir avantaj sağlar.
+1. 打开 Chrome 浏览器，访问 `chrome://extensions/`
+2. 开启右上角的「开发者模式」
+3. 点击「加载已解压的扩展程序」
+4. 选择本项目目录
+5. 扩展安装完成，工具栏会出现扩展图标
 
-Kullanıcılar, yan paneldeki sezgisel arayüz üzerinden tercih ettikleri AI sağlayıcısını seçebilir ve API anahtarlarını güvenli bir şekilde yönetebilirler. Eklenti, AI API çağrılarındaki (yetkilendirme hataları, hız sınırı aşımları, ağ bağlantısı sorunları vb.) olası hataları akıllıca yönetir ve kullanıcıya anlaşılır geri bildirimler sunar. Ayrıca, devam eden AI isteklerini iptal etme yeteneği, kullanıcıya süreç üzerinde tam kontrol sağlar.
+## 使用方法
 
-### 🖥️ Kapsamlı Yan Panel (Sidebar) Yönetimi
+### 基本使用
 
-Eklentinin yan paneli, tüm işlevselliği tek bir merkezi konumda birleştiren kullanıcı dostu bir arayüz sunar:
+1. 点击浏览器工具栏的扩展图标，打开侧边栏
+2. 点击 **Start Pick** 按钮，进入元素选择模式
+3. 鼠标悬停在页面元素上会显示高亮
+4. 点击目标元素，定位器会自动生成并显示在列表中
+5. 点击定位器文本或 Copy 按钮复制定位器
 
-- **Yan Panel Kontrolü**: Tarayıcı eklentisi ikonuna tek bir tıklamayla yan paneli kolayca açıp kapatabilirsiniz.
-- **Element Bilgileri**: Seçilen elementin tüm önemli nitelikleri (etiket, ID, sınıf, metin içeriği, zaman damgası vb.) anında görüntülenir.
-- **Locator Listeleme**: Üretilen XPath ve CSS seçicileri, kategori (basit, orta, gelişmiş), doğrulama durumu ve öncelik puanı ile birlikte düzenli bir şekilde listelenir.
-- **Geçmiş Navigasyonu**: Seçilen elementlerin bir geçmişi tutulur, bu sayede önceki seçimlere kolayca geri dönebilir veya ileri gidebilirsiniz.
-- **Tek Tıkla Kopyalama**: Herhangi bir locator'ı tek bir tıklamayla panoya kopyalayarak otomasyon betiklerinize hızlıca entegre edebilirsiniz.
-- **AI Ayarları**: AI özelliklerini etkinleştirme/devre dışı bırakma, AI sağlayıcısı seçimi ve API anahtarı yönetimi için özel bir bölüm bulunur.
-- **Davranış Ayarları**: Yan panelin otomatik genişlemesi, AI bildirimleri ve görsel efektler gibi kullanıcı deneyimi ayarlarını kişiselleştirebilirsiniz.
-- **Güvenlik Ayarları**: Sağ tıklama koruması, F12 (geliştirici araçları) tuşunu devre dışı bırakma ve geliştirici araçları algılama gibi ek güvenlik önlemleri sunar. Bu özellikler, hassas test ortamlarında istenmeyen müdahaleleri önlemeye yardımcı olur.
-- **Toast Bildirimleri**: Başarılı işlemler, uyarılar veya hatalar hakkında kullanıcıya anlık ve anlaşılır bildirimler sunulur.
+### 批量选择
 
-### ⚙️ Arka Plan İşlemleri
+1. 点击 **Start Pick** 进入选择模式
+2. 按住 **Ctrl**（Windows）或 **Cmd**（Mac）键
+3. 点击一组相似元素中的任意一个
+4. 自动识别并选中所有相似元素
 
-Eklentinin arka plan betiği (`background.js`), yan panelin ve içerik betiklerinin sorunsuz çalışmasını sağlayan önemli görevleri yerine getirir. Yan panelin açık/kapalı durumunu yönetir, sekme güncellemelerini izler ve içerik betikleri ile AI API'leri arasındaki iletişimi koordine eder. Bu sayede, eklenti tarayıcıda verimli ve güvenilir bir şekilde çalışır.
+### 管理捕获的元素
 
-## 🛠️ Kurulum
+- **查看定位器**：Captured Elements 列表中显示每个元素的最佳定位器
+- **复制单个**：点击定位器文本或 Copy 按钮
+- **复制全部**：点击 Copy All 按钮复制所有元素信息
+- **删除元素**：点击 Delete 按钮删除单个元素
+- **编辑列表**：List 类型元素点击 Edit 按钮编辑 Text
+- **折叠列表**：点击 Captured Elements 标题栏展开/收起
 
-Bu eklentiyi Chrome tarayıcınıza kurmak için aşağıdaki adımları izleyin:
+## 技术实现
 
-1. Bu depoyu klonlayın veya ZIP olarak indirin.
-2. Chrome tarayıcınızı açın ve adres çubuğuna `chrome://extensions` yazın.
-3. Sağ üst köşedeki **Geliştirici modu** anahtarını açın.
-4. **Paketlenmemiş öğe yükle** düğmesine tıklayın.
-5. İndirdiğiniz veya klonladığınız deponun ana dizinini seçin (yani `manifest.json` dosyasının bulunduğu klasör).
-6. Eklenti başarıyla yüklenecektir. Tarayıcınızın araç çubuğunda eklenti ikonunu görmelisiniz.
+### 定位器生成策略
 
-## 💡 Kullanım
+#### CSS 选择器生成优先级：
 
-1. Eklentiyi yükledikten sonra, test etmek istediğiniz herhangi bir web sayfasına gidin.
-2. Chrome araç çubuğundaki **Enhanced Element Locator** ikonuna tıklayın. Yan panel açılacaktır.
-3. Yan paneldeki **Select Element** düğmesine tıklayın. İmleciniz bir artı işaretine dönüşecektir.
-4. Web sayfasında analiz etmek istediğiniz elementin üzerine gelin. Element vurgulanacak ve tipi gösterilecektir.
-5. Elementi seçmek için tıklayın.
-6. Yan panelde, seçilen elementin detaylı bilgileri ve otomatik olarak üretilen XPath ve CSS locator önerileri görüntülenecektir.
-7. AI destekli öneriler almak için **Ask AI** düğmesine tıklayın (önce AI sağlayıcınızı yapılandırmanız gerekebilir).
-8. Herhangi bir locator'ı panoya kopyalamak için üzerine tıklayın.
-9. Geçmişte gezinmek için **Previous** ve **Next** düğmelerini kullanın.
-10. Yan paneli kapatmak için **Close Sidebar** düğmesine tıklayın.
+1. **ID 选择器**（最高优先级，稳定性高）
+2. **data-testid / data-cy**（测试友好属性）
+3. **aria-label**（无障碍属性）
+4. **class 选择器**（有意义的 class 组合）
+5. **属性选择器**（name、type、placeholder 等）
+6. **父子关系**（父元素 + 子元素）
+7. **位置索引**（nth-child、nth-of-type）
 
-## 🤝 Katkıda Bulunma
+#### XPath 生成优先级：
 
-Bu projeye katkıda bulunmaktan çekinmeyin! Hata raporları, özellik istekleri veya kod katkıları her zaman memnuniyetle karşılanır. Lütfen bir Pull Request göndermeden önce mevcut sorunları ve tartışmaları kontrol edin.
+1. **ID 属性**
+2. **data-testid 属性**
+3. **aria-label 属性**
+4. **文本内容**（normalize-space）
+5. **属性组合**
+6. **轴定位**（父子、兄弟关系）
 
-## 📄 Lisans
+### SVG 元素定位
 
-Bu proje MIT Lisansı altında lisanslanmıştır. Daha fazla bilgi için `LICENSE` dosyasına bakın.
+SVG 元素采用特殊的定位策略：
 
-## 📞 İletişim
+1. **直接属性**：优先使用 id、data-testid、aria-label
+2. **祖先上下文**：使用 HTML 父元素的 class/id 作为锚点
+3. **SVG 属性**：viewBox、stroke、fill 等 SVG 特有属性
+4. **位置索引**：同类型元素使用位置区分
 
-Sorularınız veya geri bildirimleriniz için benimle iletişime geçmekten çekinmeyin.
+## 项目结构
 
----
+```
+webElementLocator/
+├── icons/                  # 扩展图标
+│   ├── icon16.png
+│   ├── icon32.png
+│   ├── icon48.png
+│   └── icon128.png
+├── background.js          # 后台服务 Worker
+├── content.js             # 内容脚本（核心逻辑）
+├── content.css            # 内容脚本样式
+├── manifest.json          # 扩展配置
+├── sidebar.html           # 侧边栏 HTML
+├── sidebar.css            # 侧边栏样式
+├── sidebar.js             # 侧边栏逻辑
+└── lucide.js              # 图标库
+```
 
-**Manus AI tarafından oluşturulmuştur.**
+## 已知限制
 
+- **跨域 iframe**：由于浏览器安全限制，无法定位跨域 iframe 内的元素
+- **Closed Shadow DOM**：无法访问 closed 模式的 Shadow DOM 内部元素
+- **动态生成的随机 ID**：包含随机哈希的 ID 会被识别并过滤
+- **SVG 元素**：部分高度相似的 SVG 可能需要依赖父元素定位
 
+## 许可证
+
+MIT License
