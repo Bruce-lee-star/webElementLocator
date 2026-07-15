@@ -23,8 +23,15 @@
 
 ### SVG 元素优化
 
-- **祖先元素链策略**：优先使用父元素/祖先元素的 class/id 来精确定位 SVG
-- **智能 class 过滤**：自动过滤随机生成的无意义 class
+采用企业级 SVG 定位策略，涵盖图表、图标、流程图等多种 SVG 场景：
+
+- **命名空间兼容**：XPath 全部使用 `*[local-name()='svg']` 写法，彻底避免 SVG 命名空间干扰
+- **文本锚定法**：利用 `<text>` 标签作为"灯塔"，通过 `ancestor::g` 反向定位相关图形（图表/流程图场景）
+- **Title 子元素定位**：CSS `:has(title)` + XPath 双重支持，利用 tooltip 文字稳定定位
+- **祖先元素链策略**：优先使用 HTML 父元素/祖先元素的 class/id 来精确定位 SVG（图标按钮场景）
+- **智能 class 过滤**：自动过滤随机生成的无意义 class（纯数字、十六进制哈希等）
+- **路径中段匹配**：`d` 属性截取中间 20 字符进行 `contains` 匹配，抗噪性更强
+- **Transform 属性**：利用 transform 矩阵特征定位固定布局元素
 - **多层级定位器**：使用 1-3 层祖先元素组合提高定位精度
 - **位置索引**：同类型多元素时使用 nth-child/position 区分
 
@@ -95,14 +102,25 @@
 5. **属性组合**
 6. **轴定位**（父子、兄弟关系）
 
-### SVG 元素定位
+### SVG 元素定位（企业级策略）
 
-SVG 元素采用特殊的定位策略：
+SVG 元素采用七层定位策略，从最稳定到最兜底：
 
-1. **直接属性**：优先使用 id、data-testid、aria-label
-2. **祖先上下文**：使用 HTML 父元素的 class/id 作为锚点
-3. **SVG 属性**：viewBox、stroke、fill 等 SVG 特有属性
-4. **位置索引**：同类型元素使用位置区分
+| 优先级 | 策略 | 适用场景 | 示例 |
+|-------|------|---------|------|
+| 1 | 直接唯一属性 | 有 id/data-testid/aria-label 的 SVG | `//*[@id="close-icon"]` |
+| 2 | Title 子元素 | 带 tooltip 的 SVG（`:has(title)`） | `svg:has(> title)` |
+| 3 | 文本锚定法 | 图表/流程图，用 text 反向找图形 | `//*[local-name()='text' and text()='营收']/ancestor::*[local-name()='g'][1]/*[local-name()='rect']` |
+| 4 | HTML 祖先上下文 | 图标按钮，依赖父元素 class | `.tools-clear-icon svg` |
+| 5 | Transform 属性 | 固定布局的元素 | `g[transform*="translate(100"]` |
+| 6 | SVG 内部属性 | 基于 viewBox/stroke/fill 等 | `svg[viewBox="0 0 20 20"]` |
+| 7 | 位置索引 | 最后兜底手段 | `(//svg)[2]` |
+
+**核心设计原则**：
+- **命名空间护身符**：所有 SVG XPath 使用 `*[local-name()='tag']` 写法，防止命名空间干扰
+- **优先 contains 而非 =**：属性值用模糊匹配，应对前缀/空格变化
+- **避免绝对路径**：绝不生成 `/html/body/div[2]/...` 这类脆弱路径
+- **警惕 nth-child**：仅在无其他特征时使用索引定位
 
 ## 项目结构
 

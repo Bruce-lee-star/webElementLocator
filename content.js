@@ -125,6 +125,10 @@
         
         for (let i = 0; i < iframes.length; i++) {
             const iframe = iframes[i];
+            // Skip the sidebar's own iframe and data-extension elements
+            if (iframe.hasAttribute('data-extension-element') || (sidebarIframe && iframe === sidebarIframe)) {
+                continue;
+            }
             try {
                 const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
                 if (iframeDoc) {
@@ -133,7 +137,7 @@
                     addEventListenerSafely(iframeDoc, "click", handleElementClick, clickOptions);
                 }
             } catch (e) {
-                console.warn('[Content] Cannot attach listeners to cross-origin iframe:', iframe.src);
+                // Cross-origin iframe - silently skip, this is expected
             }
         }
     }
@@ -507,6 +511,90 @@
             if (!chromeIsReady()) return;
         };
         document.body.appendChild(sidebarContainer);
+
+        // Ensure sidebar stays on top by re-appending when new modals/dialogs appear
+        ensureSidebarOnTop();
+    }
+
+    function getTopMostContainer(targetElement) {
+        if (!targetElement) return document.body;
+        var dialogs = document.querySelectorAll('dialog[open]');
+        for (var i = dialogs.length - 1; i >= 0; i--) {
+            var dialog = dialogs[i];
+            if (dialog.contains(targetElement)) {
+                return dialog;
+            }
+        }
+        var allModals = document.querySelectorAll('[role="dialog"], [role="alertdialog"], .modal, .Modal, .popup, .Popover, .dropdown, .Dropdown');
+        for (var k = allModals.length - 1; k >= 0; k--) {
+            var modal = allModals[k];
+            if (modal.contains(targetElement) && getComputedStyle(modal).display !== 'none' && getComputedStyle(modal).visibility !== 'hidden') {
+                var modalRect = modal.getBoundingClientRect();
+                if (modalRect.width > 0 && modalRect.height > 0) {
+                    return modal;
+                }
+            }
+        }
+        return document.body;
+    }
+
+    function ensureOverlayOnTop(overlay) {
+        if (!overlay || !overlay.parentNode) return;
+        var parent = overlay.parentNode;
+        if (parent.lastChild !== overlay) {
+            parent.appendChild(overlay);
+        }
+    }
+
+    // Keep sidebar and highlight on top of any dynamically created modals/dialogs
+    let topLayerObserver = null;
+    function ensureSidebarOnTop() {
+        if (topLayerObserver) return;
+        topLayerObserver = new MutationObserver(function(mutations) {
+            var sidebarContainer = document.getElementById('elementLocatorContainer');
+            var resizeHandle = document.getElementById('elementLocatorResizeHandle');
+            var needsRaise = false;
+            var hasNewDialog = false;
+            for (var i = 0; i < mutations.length; i++) {
+                var added = mutations[i].addedNodes;
+                for (var j = 0; j < added.length; j++) {
+                    var node = added[j];
+                    if (node.nodeType === 1 && !node.hasAttribute('data-extension-element')) {
+                        var tagName = node.tagName ? node.tagName.toLowerCase() : '';
+                        if (tagName === 'dialog' || node.getAttribute('role') === 'dialog' || node.getAttribute('role') === 'alertdialog' || 
+                            (node.className && typeof node.className === 'string' && /modal|Modal|popup|Popover|dialog|Dialog/.test(node.className))) {
+                            needsRaise = true;
+                            if (tagName === 'dialog') hasNewDialog = true;
+                            break;
+                        }
+                        if (node.querySelectorAll) {
+                            var nestedDialogs = node.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"]');
+                            if (nestedDialogs && nestedDialogs.length > 0) {
+                                needsRaise = true;
+                                var dialogElems = node.querySelectorAll('dialog');
+                                if (dialogElems && dialogElems.length > 0) hasNewDialog = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if (needsRaise) break;
+            }
+            if (needsRaise) {
+                if (sidebarContainer && sidebarContainer.parentNode) {
+                    sidebarContainer.parentNode.appendChild(sidebarContainer);
+                }
+                if (resizeHandle && resizeHandle.parentNode) {
+                    resizeHandle.parentNode.appendChild(resizeHandle);
+                }
+                if (highlightOverlay && highlightOverlay.parentNode) {
+                    highlightOverlay.parentNode.appendChild(highlightOverlay);
+                }
+            }
+        });
+        try {
+            topLayerObserver.observe(document.body, { childList: true, subtree: true });
+        } catch(e) {}
     }
 
     // DOM Isolation Configuration.
@@ -712,7 +800,8 @@
         }
 
         getCacheKey(element) {
-            return `${element.tagName}_${element.id}_${element.className}_${element.textContent?.substring(0, 20)}`;
+            var cls = element.getAttribute('class') || '';
+            return `${element.tagName}_${element.id}_${cls}_${element.textContent?.substring(0, 20)}`;
         }
 
         // Generates unified locators for an element.
@@ -1247,6 +1336,10 @@
 
             function xpEsc(s) { return String(s).replace(/'/g, "&apos;").replace(/"/g, '&quot;'); }
 
+            function ln(tagName) {
+                return "*[local-name()='" + tagName + "']";
+            }
+
             function getClassList(el) {
                 try {
                     if (el.classList && typeof el.classList === 'object' && el.classList.length !== undefined) {
@@ -1293,20 +1386,6 @@
                 return ancestors;
             }
 
-            function getSiblingIndex(el) {
-                try {
-                    const parent = el.parentElement;
-                    if (!parent) return -1;
-                    const siblings = parent.children;
-                    let idx = 1;
-                    for (let i = 0; i < siblings.length; i++) {
-                        if (siblings[i].isSameNode(el)) return idx;
-                        if (siblings[i].tagName === el.tagName) idx++;
-                    }
-                } catch(e) {}
-                return -1;
-            }
-
             function getPositionIndex(el) {
                 try {
                     const parent = el.parentElement;
@@ -1339,6 +1418,39 @@
                 return xp;
             }
 
+            function findTextAncestors(el) {
+                const results = [];
+                const svgRoot = getSvgRoot(el);
+                if (!svgRoot) return results;
+                
+                const textElements = svgRoot.querySelectorAll('text');
+                for (let i = 0; i < textElements.length; i++) {
+                    const textEl = textElements[i];
+                    const textContent = (textEl.textContent || '').trim();
+                    if (!textContent || textContent.length > 30) continue;
+                    
+                    let cur = textEl.parentElement;
+                    let depth = 0;
+                    while (cur && cur !== svgRoot && depth < 5) {
+                        if (cur.contains(el)) {
+                            results.push({ text: textContent, gDepth: depth + 1, textEl: textEl });
+                            break;
+                        }
+                        cur = cur.parentElement;
+                        depth++;
+                    }
+                }
+                return results;
+            }
+
+            function hasTitleChild(el) {
+                const children = el.children;
+                for (let i = 0; i < children.length; i++) {
+                    if (children[i].tagName.toLowerCase() === 'title') return children[i];
+                }
+                return null;
+            }
+
             const svgRoot = getSvgRoot(element);
             const htmlAncestors = getHtmlAncestors(svgRoot || element, 6);
             const isSvgTag = tag === 'svg';
@@ -1352,43 +1464,87 @@
             const classList = getClassList(element).filter(isMeaningfulClass);
 
             const viewBox = element.getAttribute('viewBox');
-            const widthAttr = element.getAttribute('width');
-            const heightAttr = element.getAttribute('height');
             const fillAttr = element.getAttribute('fill');
             const strokeAttr = element.getAttribute('stroke');
             const strokeWidthAttr = element.getAttribute('stroke-width');
+            const transformAttr = element.getAttribute('transform');
 
             const svgId = targetSvg ? (targetSvg.id || targetSvg.getAttribute('id')) : '';
             const svgViewBox = targetSvg ? targetSvg.getAttribute('viewBox') : '';
             const svgClasses = targetSvg ? getClassList(targetSvg).filter(isMeaningfulClass) : [];
 
+            const titleChild = hasTitleChild(element);
+            const titleText = titleChild ? (titleChild.textContent || '').trim() : '';
+            const textAnchors = !isSvgTag ? findTextAncestors(element) : [];
+
             // ===== Strategy 1: Direct unique attributes (highest confidence) =====
+            // Enterprise: always use local-name() for SVG elements to avoid namespace issues
             if (id) {
                 locators.push({ type: 'SVG by ID', value: '//*[@id="' + xpEsc(id) + '"]', confidence: 100, level: 'simple' });
             }
             if (dataTestId) {
-                locators.push({ type: 'SVG by data-testid', value: '//' + tag + '[@data-testid="' + xpEsc(dataTestId) + '"]', confidence: 98, level: 'simple' });
+                locators.push({ type: 'SVG by data-testid', value: '//' + ln(tag) + '[@data-testid="' + xpEsc(dataTestId) + '"]', confidence: 98, level: 'simple' });
             }
             if (ariaLabel) {
-                locators.push({ type: 'SVG by aria-label', value: '//' + tag + '[@aria-label="' + xpEsc(ariaLabel) + '"]', confidence: 94, level: 'simple' });
+                locators.push({ type: 'SVG by aria-label', value: '//' + ln(tag) + '[@aria-label="' + xpEsc(ariaLabel) + '"]', confidence: 94, level: 'simple' });
             }
             if (dataIcon) {
-                locators.push({ type: 'SVG by data-icon', value: '//' + tag + '[@data-icon="' + xpEsc(dataIcon) + '"]', confidence: 94, level: 'simple' });
+                locators.push({ type: 'SVG by data-icon', value: '//' + ln(tag) + '[@data-icon="' + xpEsc(dataIcon) + '"]', confidence: 94, level: 'simple' });
             }
             if (roleAttr) {
-                locators.push({ type: 'SVG by role', value: '//' + tag + '[@role="' + xpEsc(roleAttr) + '"]', confidence: 82, level: 'simple' });
+                locators.push({ type: 'SVG by role', value: '//' + ln(tag) + '[@role="' + xpEsc(roleAttr) + '"]', confidence: 82, level: 'simple' });
             }
 
-            // ===== Strategy 2: With HTML ancestor context (very important for icon SVGs) =====
+            // ===== Strategy 2: Title child element (SVG tooltip pattern) =====
+            // Enterprise: leverage <title> tooltip elements for stable identification
+            if (titleText) {
+                locators.push({
+                    type: 'SVG by title text',
+                    value: '//' + ln(tag) + '[.//' + ln('title') + '/text()="' + xpEsc(titleText) + '"]',
+                    confidence: 88,
+                    level: 'simple'
+                });
+                locators.push({
+                    type: 'SVG by title (contains)',
+                    value: '//' + ln(tag) + '[contains(.//' + ln('title') + '/text(), "' + xpEsc(titleText.slice(0, 10)) + '")]',
+                    confidence: 82,
+                    level: 'medium'
+                });
+            }
+
+            // ===== Strategy 3: Text anchor method (SVG chart pattern) =====
+            // Enterprise: use <text> as "lighthouse" to find related shapes
+            if (textAnchors.length > 0) {
+                textAnchors.slice(0, 3).forEach((anchor, idx) => {
+                    const confidence = 92 - idx * 5;
+                    locators.push({
+                        type: 'SVG by text anchor (exact)',
+                        value: '//' + ln('text') + '[normalize-space(text())="' + xpEsc(anchor.text) + '"]/ancestor::' + ln('g') + '[' + anchor.gDepth + ']/' + ln(tag),
+                        confidence: confidence,
+                        level: 'simple'
+                    });
+                    locators.push({
+                        type: 'SVG by text anchor (contains)',
+                        value: '//' + ln('text') + '[contains(text(), "' + xpEsc(anchor.text.slice(0, 5)) + '")]/ancestor::' + ln('g') + '[' + anchor.gDepth + ']/' + ln(tag),
+                        confidence: confidence - 6,
+                        level: 'medium'
+                    });
+                });
+            }
+
+            // ===== Strategy 4: With HTML ancestor context (icon SVG pattern) =====
             if (htmlAncestors.length > 0) {
                 for (let depth = 1; depth <= Math.min(3, htmlAncestors.length); depth++) {
                     const ancestorBase = buildAncestorXpath(htmlAncestors, depth);
                     if (!ancestorBase) continue;
 
+                    const svgTagXp = ln('svg');
+                    const targetTagXp = ln(tag);
+
                     if (isSvgTag) {
                         locators.push({
                             type: `SVG by ${depth}-ancestor + svg`,
-                            value: ancestorBase + '//svg',
+                            value: ancestorBase + '//' + svgTagXp,
                             confidence: 88 - (depth - 1) * 5,
                             level: depth === 1 ? 'simple' : 'medium'
                         });
@@ -1396,7 +1552,7 @@
                         if (svgViewBox) {
                             locators.push({
                                 type: `SVG by ${depth}-ancestor + viewBox`,
-                                value: ancestorBase + '//svg[@viewBox="' + xpEsc(svgViewBox) + '"]',
+                                value: ancestorBase + '//' + svgTagXp + '[@viewBox="' + xpEsc(svgViewBox) + '"]',
                                 confidence: 92 - (depth - 1) * 3,
                                 level: 'medium'
                             });
@@ -1404,23 +1560,64 @@
                         if (svgClasses.length > 0) {
                             locators.push({
                                 type: `SVG by ${depth}-ancestor + class`,
-                                value: ancestorBase + '//svg[contains(@class, "' + xpEsc(svgClasses[0]) + '")]',
+                                value: ancestorBase + '//' + svgTagXp + '[contains(@class, "' + xpEsc(svgClasses[0]) + '")]',
                                 confidence: 90 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                            if (svgClasses.length >= 2) {
+                                locators.push({
+                                    type: `SVG by ${depth}-ancestor + multi-class`,
+                                    value: ancestorBase + '//' + svgTagXp + '[contains(@class, "' + xpEsc(svgClasses[0]) + '") and contains(@class, "' + xpEsc(svgClasses[1]) + '")]',
+                                    confidence: 94 - (depth - 1) * 3,
+                                    level: 'medium'
+                                });
+                            }
+                        }
+                        if (svgViewBox && svgClasses.length > 0) {
+                            locators.push({
+                                type: `SVG by ${depth}-ancestor + viewBox + class`,
+                                value: ancestorBase + '//' + svgTagXp + '[@viewBox="' + xpEsc(svgViewBox) + '" and contains(@class, "' + xpEsc(svgClasses[0]) + '")]',
+                                confidence: 96 - (depth - 1) * 3,
                                 level: 'medium'
                             });
                         }
                     } else {
                         locators.push({
                             type: `SVG Child by ${depth}-ancestor`,
-                            value: ancestorBase + '//' + tag,
+                            value: ancestorBase + '//' + targetTagXp,
                             confidence: 85 - (depth - 1) * 5,
                             level: depth === 1 ? 'simple' : 'medium'
                         });
 
+                        locators.push({
+                            type: `SVG Child by ${depth}-ancestor + svg + tag`,
+                            value: ancestorBase + '//' + svgTagXp + '//' + targetTagXp,
+                            confidence: 88 - (depth - 1) * 5,
+                            level: 'medium'
+                        });
+
+                        if (svgViewBox) {
+                            locators.push({
+                                type: `SVG Child by ${depth}-ancestor + viewBox + tag`,
+                                value: ancestorBase + '//' + svgTagXp + '[@viewBox="' + xpEsc(svgViewBox) + '"]//' + targetTagXp,
+                                confidence: 91 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+
+                        if (svgClasses.length > 0) {
+                            locators.push({
+                                type: `SVG Child by ${depth}-ancestor + svg-class + tag`,
+                                value: ancestorBase + '//' + svgTagXp + '[contains(@class, "' + xpEsc(svgClasses[0]) + '")]//' + targetTagXp,
+                                confidence: 90 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+
                         if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
                             locators.push({
                                 type: `SVG Child by ${depth}-ancestor + stroke`,
-                                value: ancestorBase + '//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"]',
+                                value: ancestorBase + '//' + targetTagXp + '[@stroke="' + xpEsc(strokeAttr) + '"]',
                                 confidence: 80 - (depth - 1) * 3,
                                 level: 'medium'
                             });
@@ -1428,15 +1625,22 @@
                         if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
                             locators.push({
                                 type: `SVG Child by ${depth}-ancestor + fill`,
-                                value: ancestorBase + '//' + tag + '[@fill="' + xpEsc(fillAttr) + '"]',
+                                value: ancestorBase + '//' + targetTagXp + '[@fill="' + xpEsc(fillAttr) + '"]',
                                 confidence: 75 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+                        if (strokeAttr && fillAttr && strokeAttr !== 'currentColor' && fillAttr !== 'currentColor') {
+                            locators.push({
+                                type: `SVG Child by ${depth}-ancestor + stroke + fill`,
+                                value: ancestorBase + '//' + targetTagXp + '[@stroke="' + xpEsc(strokeAttr) + '" and @fill="' + xpEsc(fillAttr) + '"]',
+                                confidence: 85 - (depth - 1) * 3,
                                 level: 'medium'
                             });
                         }
                     }
                 }
 
-                // Strategy: ancestor with position index for disambiguation
                 const firstAnc = htmlAncestors[0];
                 if (firstAnc) {
                     const firstAncClasses = getClassList(firstAnc).filter(isMeaningfulClass);
@@ -1445,7 +1649,7 @@
                         const ancXp = '//' + firstAnc.tagName.toLowerCase() + '[contains(@class, "' + xpEsc(firstAncClasses[0]) + '")][' + posIdx + ']';
                         locators.push({
                             type: 'SVG by ancestor[pos]',
-                            value: ancXp + '//' + (isSvgTag ? 'svg' : tag),
+                            value: ancXp + '//' + (isSvgTag ? ln('svg') : ln(tag)),
                             confidence: 86,
                             level: 'advanced'
                         });
@@ -1453,41 +1657,46 @@
                 }
             }
 
-            // ===== Strategy 3: SVG internal attributes =====
+            // ===== Strategy 5: Transform attribute (fixed layout pattern) =====
+            if (transformAttr && transformAttr.length > 5) {
+                const transformShort = transformAttr.slice(0, 25);
+                locators.push({
+                    type: 'SVG by transform (partial)',
+                    value: '//' + ln(tag) + '[contains(@transform, "' + xpEsc(transformShort) + '")]',
+                    confidence: 65,
+                    level: 'advanced'
+                });
+            }
+
+            // ===== Strategy 6: SVG internal attributes =====
             if (isSvgTag) {
                 if (viewBox) {
-                    locators.push({ type: 'SVG by ViewBox', value: '//svg[@viewBox="' + xpEsc(viewBox) + '"]', confidence: 80, level: 'simple' });
+                    locators.push({ type: 'SVG by ViewBox', value: '//' + ln('svg') + '[@viewBox="' + xpEsc(viewBox) + '"]', confidence: 80, level: 'simple' });
                 }
                 if (classList.length > 0) {
-                    locators.push({ type: 'SVG by Class', value: '//svg[contains(@class, "' + xpEsc(classList[0]) + '")]', confidence: 75, level: 'medium' });
+                    locators.push({ type: 'SVG by Class', value: '//' + ln('svg') + '[contains(@class, "' + xpEsc(classList[0]) + '")]', confidence: 75, level: 'medium' });
                     if (classList.length >= 2) {
                         locators.push({
                             type: 'SVG by Multi-Class',
-                            value: '//svg[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
+                            value: '//' + ln('svg') + '[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
                             confidence: 85,
                             level: 'medium'
                         });
                     }
                 }
-                if (widthAttr && heightAttr) {
-                    locators.push({ type: 'SVG by Size', value: '//svg[@width="' + xpEsc(widthAttr) + '"][@height="' + xpEsc(heightAttr) + '"]', confidence: 60, level: 'medium' });
-                }
-                if (viewBox && fillAttr && fillAttr !== 'currentColor') {
-                    locators.push({ type: 'SVG by ViewBox+Fill', value: '//svg[@viewBox="' + xpEsc(viewBox) + '"][@fill="' + xpEsc(fillAttr) + '"]', confidence: 84, level: 'medium' });
-                }
                 const svgPosIdx = getPositionIndex(element);
                 if (svgPosIdx > 0) {
-                    locators.push({ type: 'SVG by Position', value: '(//svg)[' + svgPosIdx + ']', confidence: 45, level: 'advanced' });
+                    locators.push({ type: 'SVG by Position', value: '(//' + ln('svg') + ')[' + svgPosIdx + ']', confidence: 45, level: 'advanced' });
                 }
             } else {
                 if (classList.length > 0) {
                     classList.forEach(cls => {
-                        locators.push({ type: 'SVG Child by Class', value: '//svg//' + tag + '[contains(@class, "' + xpEsc(cls) + '")]', confidence: 72, level: 'medium' });
+                        locators.push({ type: 'SVG Child by Class', value: '//' + ln('svg') + '//' + ln(tag) + '[contains(@class, "' + xpEsc(cls) + '")]', confidence: 72, level: 'medium' });
                     });
                     if (classList.length >= 2) {
                         locators.push({
                             type: 'SVG Child by Multi-Class',
-                            value: '//svg//' + tag + '[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
+                            value: '//' + ln('svg') + '//' + ln(tag) + '[contains(@class, "' + xpEsc(classList[0]) + '") and contains(@class, "' + xpEsc(classList[1]) + '")]',
                             confidence: 82,
                             level: 'medium'
                         });
@@ -1495,15 +1704,15 @@
                 }
 
                 if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
-                    locators.push({ type: 'SVG Child by Stroke', value: '//svg//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"]', confidence: 55, level: 'medium' });
+                    locators.push({ type: 'SVG Child by Stroke', value: '//' + ln('svg') + '//' + ln(tag) + '[@stroke="' + xpEsc(strokeAttr) + '"]', confidence: 55, level: 'medium' });
                 }
                 if (fillAttr && fillAttr !== 'currentColor' && fillAttr !== 'none') {
-                    locators.push({ type: 'SVG Child by Fill', value: '//svg//' + tag + '[@fill="' + xpEsc(fillAttr) + '"]', confidence: 48, level: 'medium' });
+                    locators.push({ type: 'SVG Child by Fill', value: '//' + ln('svg') + '//' + ln(tag) + '[@fill="' + xpEsc(fillAttr) + '"]', confidence: 48, level: 'medium' });
                 }
                 if (strokeAttr && fillAttr && strokeAttr !== 'currentColor' && fillAttr !== 'currentColor') {
                     locators.push({
                         type: 'SVG Child by Stroke+Fill',
-                        value: '//svg//' + tag + '[@stroke="' + xpEsc(strokeAttr) + '"][@fill="' + xpEsc(fillAttr) + '"]',
+                        value: '//' + ln('svg') + '//' + ln(tag) + '[@stroke="' + xpEsc(strokeAttr) + '"][@fill="' + xpEsc(fillAttr) + '"]',
                         confidence: 72,
                         level: 'medium'
                     });
@@ -1514,7 +1723,7 @@
                     if (cx && cy && r) {
                         locators.push({
                             type: 'SVG Circle by cx+cy+r',
-                            value: '//svg//circle[@cx="' + xpEsc(cx) + '"][@cy="' + xpEsc(cy) + '"][@r="' + xpEsc(r) + '"]',
+                            value: '//' + ln('svg') + '//' + ln('circle') + '[@cx="' + xpEsc(cx) + '"][@cy="' + xpEsc(cy) + '"][@r="' + xpEsc(r) + '"]',
                             confidence: 78,
                             level: 'medium'
                         });
@@ -1527,7 +1736,7 @@
                     if (x && y && w && h) {
                         locators.push({
                             type: 'SVG ' + tag + ' by position+size',
-                            value: '//svg//' + tag + '[@x="' + xpEsc(x) + '"][@y="' + xpEsc(y) + '"][@width="' + xpEsc(w) + '"][@height="' + xpEsc(h) + '"]',
+                            value: '//' + ln('svg') + '//' + ln(tag) + '[@x="' + xpEsc(x) + '"][@y="' + xpEsc(y) + '"][@width="' + xpEsc(w) + '"][@height="' + xpEsc(h) + '"]',
                             confidence: 78,
                             level: 'medium'
                         });
@@ -1537,17 +1746,19 @@
                 if (tag === 'path') {
                     const dAttr = element.getAttribute('d');
                     if (dAttr && dAttr.length > 5) {
-                        const partialD = dAttr.slice(0, 15);
+                        const midStart = Math.floor(dAttr.length / 3);
+                        const midEnd = midStart + 20;
+                        const partialD = dAttr.slice(midStart, midEnd);
                         locators.push({
-                            type: 'SVG Path by d (partial)',
-                            value: '//svg//path[starts-with(@d, "' + xpEsc(partialD) + '")]',
-                            confidence: 70,
+                            type: 'SVG Path by d (mid-section)',
+                            value: '//' + ln('svg') + '//' + ln('path') + '[contains(@d, "' + xpEsc(partialD) + '")]',
+                            confidence: 72,
                             level: 'advanced'
                         });
                         if (fillAttr && fillAttr !== 'currentColor') {
                             locators.push({
                                 type: 'SVG Path by d+fill',
-                                value: '//svg//path[starts-with(@d, "' + xpEsc(partialD) + '")][@fill="' + xpEsc(fillAttr) + '"]',
+                                value: '//' + ln('svg') + '//' + ln('path') + '[contains(@d, "' + xpEsc(partialD) + '")][@fill="' + xpEsc(fillAttr) + '"]',
                                 confidence: 82,
                                 level: 'advanced'
                             });
@@ -1561,7 +1772,7 @@
                         const partialPts = points.slice(0, 15);
                         locators.push({
                             type: 'SVG Polygon by points (partial)',
-                            value: '//svg//polygon[starts-with(@points, "' + xpEsc(partialPts) + '")]',
+                            value: '//' + ln('svg') + '//' + ln('polygon') + '[starts-with(@points, "' + xpEsc(partialPts) + '")]',
                             confidence: 70,
                             level: 'advanced'
                         });
@@ -1571,7 +1782,7 @@
                 if (svgViewBox) {
                     locators.push({
                         type: 'SVG Child by Parent ViewBox',
-                        value: '//svg[@viewBox="' + xpEsc(svgViewBox) + '"]//' + tag,
+                        value: '//' + ln('svg') + '[@viewBox="' + xpEsc(svgViewBox) + '"]//' + ln(tag),
                         confidence: 70,
                         level: 'simple'
                     });
@@ -1579,7 +1790,7 @@
                 if (svgId) {
                     locators.push({
                         type: 'SVG Child by Parent SVG ID',
-                        value: '//svg[@id="' + xpEsc(svgId) + '"]//' + tag,
+                        value: '//' + ln('svg') + '[@id="' + xpEsc(svgId) + '"]//' + ln(tag),
                         confidence: 88,
                         level: 'simple'
                     });
@@ -1590,25 +1801,61 @@
                     if (svgViewBox) {
                         locators.push({
                             type: 'SVG Child by ViewBox+Index',
-                            value: '(//svg[@viewBox="' + xpEsc(svgViewBox) + '"]//' + tag + ')[' + childPosIdx + ']',
+                            value: '(//' + ln('svg') + '[@viewBox="' + xpEsc(svgViewBox) + '"]//' + ln(tag) + ')[' + childPosIdx + ']',
                             confidence: 80,
                             level: 'advanced'
                         });
                     }
                     locators.push({
                         type: 'SVG Child by Position',
-                        value: '(//svg//' + tag + ')[' + childPosIdx + ']',
+                        value: '(//' + ln('svg') + '//' + ln(tag) + ')[' + childPosIdx + ']',
                         confidence: 42,
                         level: 'advanced'
                     });
                 }
             }
 
-            // ===== Strategy 4: Basic fallback =====
-            if (isSvgTag) {
-                locators.push({ type: 'SVG Element [Basic]', value: '//svg', confidence: 20, level: 'advanced' });
-            } else {
-                locators.push({ type: 'SVG Child [Basic]', value: '//svg//' + tag, confidence: 25, level: 'advanced' });
+            // ===== Strategy 7: Context-aware fallback (never just "//svg") =====
+            {
+                let ctxXp = '';
+                let ctxFound = false;
+                let ctxAnc = element.parentElement;
+                let ctxD = 0;
+                while (ctxAnc && ctxAnc !== document.body && ctxD < 6 && !ctxFound) {
+                    if (ctxAnc.id) {
+                        ctxXp = '//*[@id="' + xpEsc(ctxAnc.id) + '"]';
+                        ctxFound = true;
+                    } else {
+                        var ctxCls2 = getClassList(ctxAnc).filter(isMeaningfulClass);
+                        if (ctxCls2.length > 0) {
+                            ctxXp = '//' + ctxAnc.tagName.toLowerCase() + '[contains(@class, "' + xpEsc(ctxCls2[0]) + '")]';
+                            ctxFound = true;
+                        }
+                    }
+                    ctxAnc = ctxAnc.parentElement;
+                    ctxD++;
+                }
+
+                if (ctxFound) {
+                    if (isSvgTag) {
+                        locators.push({ type: 'SVG by context [Fallback]', value: ctxXp + '//' + ln('svg'), confidence: 50, level: 'advanced' });
+                        if (svgViewBox) {
+                            locators.push({ type: 'SVG by context+viewBox [Fallback]', value: ctxXp + '//' + ln('svg') + '[@viewBox="' + xpEsc(svgViewBox) + '"]', confidence: 65, level: 'advanced' });
+                        }
+                    } else {
+                        locators.push({ type: 'SVG Child by context [Fallback]', value: ctxXp + '//' + ln('svg') + '//' + ln(tag), confidence: 50, level: 'advanced' });
+                        if (svgViewBox) {
+                            locators.push({ type: 'SVG Child by context+viewBox [Fallback]', value: ctxXp + '//' + ln('svg') + '[@viewBox="' + xpEsc(svgViewBox) + '"]//' + ln(tag), confidence: 65, level: 'advanced' });
+                        }
+                    }
+                } else {
+                    // Last resort: only if no context ancestor found at all
+                    if (isSvgTag) {
+                        locators.push({ type: 'SVG Element [Basic]', value: '//' + ln('svg'), confidence: 15, level: 'advanced' });
+                    } else {
+                        locators.push({ type: 'SVG Child [Basic]', value: '//' + ln('svg') + '//' + ln(tag), confidence: 20, level: 'advanced' });
+                    }
+                }
             }
 
             return locators;
@@ -1670,20 +1917,6 @@
                 return ancestors;
             }
 
-            function getSiblingIndex(el) {
-                try {
-                    const parent = el.parentElement;
-                    if (!parent) return -1;
-                    const siblings = parent.children;
-                    let idx = 1;
-                    for (let i = 0; i < siblings.length; i++) {
-                        if (siblings[i].isSameNode(el)) return idx;
-                        if (siblings[i].tagName === el.tagName) idx++;
-                    }
-                } catch(e) {}
-                return -1;
-            }
-
             function getNthChildIndex(el) {
                 try {
                     const parent = el.parentElement;
@@ -1716,6 +1949,23 @@
                 return sel;
             }
 
+            function hasTitleChild(el) {
+                const children = el.children;
+                for (let i = 0; i < children.length; i++) {
+                    if (children[i].tagName.toLowerCase() === 'title') return children[i];
+                }
+                return null;
+            }
+
+            function supportsHas() {
+                try {
+                    document.querySelector(':has(*)');
+                    return true;
+                } catch(e) {
+                    return false;
+                }
+            }
+
             const svgRoot = getSvgRoot(element);
             const htmlAncestors = getHtmlAncestors(svgRoot || element, 6);
             const isSvgTag = tag === 'svg';
@@ -1729,15 +1979,18 @@
             const classList = getClassList(element).filter(isMeaningfulClass);
 
             const viewBox = element.getAttribute('viewBox');
-            const widthAttr = element.getAttribute('width');
-            const heightAttr = element.getAttribute('height');
             const fillAttr = element.getAttribute('fill');
             const strokeAttr = element.getAttribute('stroke');
             const strokeWidthAttr = element.getAttribute('stroke-width');
+            const transformAttr = element.getAttribute('transform');
 
             const svgId = targetSvg ? (targetSvg.id || targetSvg.getAttribute('id')) : '';
             const svgViewBox = targetSvg ? targetSvg.getAttribute('viewBox') : '';
             const svgClasses = targetSvg ? getClassList(targetSvg).filter(isMeaningfulClass) : [];
+
+            const titleChild = hasTitleChild(element);
+            const titleText = titleChild ? (titleChild.textContent || '').trim() : '';
+            const hasHasSupport = supportsHas();
 
             // ===== Strategy 1: Direct unique attributes (highest confidence) =====
             if (id) {
@@ -1756,7 +2009,26 @@
                 selectors.push({ type: 'SVG by role', value: tag + '[role="' + roleAttr + '"]', confidence: 82, level: 'simple' });
             }
 
-            // ===== Strategy 2: With HTML ancestor context (very important for icon SVGs) =====
+            // ===== Strategy 2: :has(title) child element (CSS4 pattern) =====
+            // Enterprise: leverage <title> tooltip elements via :has() selector
+            if (hasHasSupport && titleText) {
+                selectors.push({
+                    type: 'SVG by :has(title)',
+                    value: tag + ':has(> title)',
+                    confidence: 85,
+                    level: 'medium'
+                });
+                if (isSvgTag && svgClasses.length > 0) {
+                    selectors.push({
+                        type: 'SVG by class+title',
+                        value: 'svg.' + cssEsc(svgClasses[0]) + ':has(title)',
+                        confidence: 88,
+                        level: 'medium'
+                    });
+                }
+            }
+
+            // ===== Strategy 3: With HTML ancestor context (icon SVG pattern) =====
             if (htmlAncestors.length > 0) {
                 for (let depth = 1; depth <= Math.min(3, htmlAncestors.length); depth++) {
                     const ancestorPrefix = buildAncestorSelector(htmlAncestors, depth);
@@ -1794,6 +2066,31 @@
                             level: depth === 1 ? 'simple' : 'medium'
                         });
 
+                        selectors.push({
+                            type: `SVG Child by ${depth}-ancestor + svg + tag`,
+                            value: ancestorPrefix + 'svg ' + tag,
+                            confidence: 88 - (depth - 1) * 5,
+                            level: 'medium'
+                        });
+
+                        if (svgViewBox) {
+                            selectors.push({
+                                type: `SVG Child by ${depth}-ancestor + viewBox + tag`,
+                                value: ancestorPrefix + 'svg[viewBox="' + svgViewBox + '"] ' + tag,
+                                confidence: 91 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+
+                        if (svgClasses.length > 0) {
+                            selectors.push({
+                                type: `SVG Child by ${depth}-ancestor + svg-class + tag`,
+                                value: ancestorPrefix + 'svg.' + cssEsc(svgClasses[0]) + ' ' + tag,
+                                confidence: 90 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
+
                         if (strokeAttr && strokeAttr !== 'currentColor' && strokeAttr !== 'none') {
                             selectors.push({
                                 type: `SVG Child by ${depth}-ancestor + stroke`,
@@ -1810,10 +2107,17 @@
                                 level: 'medium'
                             });
                         }
+                        if (strokeAttr && fillAttr && strokeAttr !== 'currentColor' && fillAttr !== 'currentColor') {
+                            selectors.push({
+                                type: `SVG Child by ${depth}-ancestor + stroke + fill`,
+                                value: ancestorPrefix + tag + '[stroke="' + strokeAttr + '"][fill="' + fillAttr + '"]',
+                                confidence: 85 - (depth - 1) * 3,
+                                level: 'medium'
+                            });
+                        }
                     }
                 }
 
-                // Strategy: ancestor with nth-child for disambiguation
                 const firstAnc = htmlAncestors[0];
                 if (firstAnc) {
                     const firstAncClasses = getClassList(firstAnc).filter(isMeaningfulClass);
@@ -1830,7 +2134,18 @@
                 }
             }
 
-            // ===== Strategy 3: SVG internal attributes =====
+            // ===== Strategy 4: Transform attribute (fixed layout pattern) =====
+            if (transformAttr && transformAttr.length > 5) {
+                const transformShort = transformAttr.slice(0, 25);
+                selectors.push({
+                    type: 'SVG by transform*=',
+                    value: tag + '[transform*="' + transformShort + '"]',
+                    confidence: 65,
+                    level: 'advanced'
+                });
+            }
+
+            // ===== Strategy 5: SVG internal attributes =====
             if (isSvgTag) {
                 if (viewBox) {
                     selectors.push({ type: 'SVG by ViewBox', value: 'svg[viewBox="' + viewBox + '"]', confidence: 80, level: 'simple' });
@@ -1841,13 +2156,7 @@
                         selectors.push({ type: 'SVG by Multi-Class', value: 'svg.' + cssEsc(classList[0]) + '.' + cssEsc(classList[1]), confidence: 85, level: 'medium' });
                     }
                 }
-                if (widthAttr && heightAttr) {
-                    selectors.push({ type: 'SVG by Size', value: 'svg[width="' + widthAttr + '"][height="' + heightAttr + '"]', confidence: 60, level: 'medium' });
-                }
-                if (viewBox && fillAttr && fillAttr !== 'currentColor') {
-                    selectors.push({ type: 'SVG by ViewBox+Fill', value: 'svg[viewBox="' + viewBox + '"][fill="' + fillAttr + '"]', confidence: 84, level: 'medium' });
-                }
-                const svgPosIdx = getSiblingIndex(element);
+                const svgPosIdx = getNthChildIndex(element);
                 if (svgPosIdx > 0) {
                     selectors.push({ type: 'SVG by nth-of-type', value: 'svg:nth-of-type(' + svgPosIdx + ')', confidence: 45, level: 'advanced' });
                 }
@@ -1923,7 +2232,7 @@
                     });
                 }
 
-                const childPosIdx = getSiblingIndex(element);
+                const childPosIdx = getNthChildIndex(element);
                 if (childPosIdx > 0) {
                     if (svgViewBox) {
                         selectors.push({
@@ -1942,11 +2251,50 @@
                 }
             }
 
-            // ===== Strategy 4: Basic fallback =====
-            if (isSvgTag) {
-                selectors.push({ type: 'SVG Element [Basic]', value: 'svg', confidence: 20, level: 'advanced' });
-            } else {
-                selectors.push({ type: 'SVG Child [Basic]', value: 'svg ' + tag, confidence: 25, level: 'advanced' });
+            // ===== Strategy 6: Context-aware fallback (never just "svg") =====
+            {
+                let ctxPrefix = '';
+                let ctxFound = false;
+                let ctxAnc = element.parentElement;
+                let ctxD = 0;
+                while (ctxAnc && ctxAnc !== document.body && ctxD < 6 && !ctxFound) {
+                    if (ctxAnc.id) {
+                        ctxPrefix = '#' + cssEsc(ctxAnc.id) + ' ';
+                        ctxFound = true;
+                    } else {
+                        var ctxCls = getClassList(ctxAnc).filter(isMeaningfulClass);
+                        if (ctxCls.length > 0) {
+                            ctxPrefix = ctxAnc.tagName.toLowerCase() + '.' + cssEsc(ctxCls[0]) + ' ';
+                            ctxFound = true;
+                        }
+                    }
+                    ctxAnc = ctxAnc.parentElement;
+                    ctxD++;
+                }
+
+                if (ctxFound) {
+                    if (isSvgTag) {
+                        selectors.push({ type: 'SVG by context [Fallback]', value: ctxPrefix + 'svg', confidence: 50, level: 'advanced' });
+                        if (svgViewBox) {
+                            selectors.push({ type: 'SVG by context+viewBox [Fallback]', value: ctxPrefix + 'svg[viewBox="' + svgViewBox + '"]', confidence: 65, level: 'advanced' });
+                        }
+                        if (svgClasses.length > 0) {
+                            selectors.push({ type: 'SVG by context+class [Fallback]', value: ctxPrefix + 'svg.' + cssEsc(svgClasses[0]), confidence: 60, level: 'advanced' });
+                        }
+                    } else {
+                        selectors.push({ type: 'SVG Child by context [Fallback]', value: ctxPrefix + 'svg ' + tag, confidence: 50, level: 'advanced' });
+                        if (svgViewBox) {
+                            selectors.push({ type: 'SVG Child by context+viewBox [Fallback]', value: ctxPrefix + 'svg[viewBox="' + svgViewBox + '"] ' + tag, confidence: 65, level: 'advanced' });
+                        }
+                    }
+                } else {
+                    // Last resort: only if no context ancestor found at all
+                    if (isSvgTag) {
+                        selectors.push({ type: 'SVG Element [Basic]', value: 'svg', confidence: 15, level: 'advanced' });
+                    } else {
+                        selectors.push({ type: 'SVG Child [Basic]', value: 'svg ' + tag, confidence: 20, level: 'advanced' });
+                    }
+                }
             }
 
             return selectors;
@@ -2053,23 +2401,67 @@
                 return !validation.isValid && validation.matchCount > 1;
             });
 
+            // Helper: find nearest ancestor with id or meaningful class
+            function findContextAncestor(el, maxDepth) {
+                var cur = el.parentElement;
+                var depth = 0;
+                while (cur && cur !== document.body && depth < maxDepth) {
+                    if (cur.id) return { el: cur, type: 'id', value: cur.id };
+                    var cls = cur.getAttribute('class');
+                    if (cls) {
+                        var classes = cls.trim().split(/\s+/).filter(function(c) {
+                            return c.length >= 3 && !/^\d/.test(c) && !/^(hover|active|focus|selected|disabled|open|closed|show|hide|visible|hidden)$/i.test(c);
+                        });
+                        if (classes.length > 0) return { el: cur, type: 'class', value: classes[0] };
+                    }
+                    cur = cur.parentElement;
+                    depth++;
+                }
+                return null;
+            }
+
             nonUniqueLocators.forEach(locator => {
-                if (element.parentElement && element.parentElement.id) {
-                    const parentId = element.parentElement.id;
-                    const value = locator.value;
-                    if (value.startsWith('//')) {
+                var ctx = findContextAncestor(element, 6);
+                if (!ctx) return;
+
+                var value = locator.value;
+                if (value.startsWith('//')) {
+                    // XPath locator
+                    if (ctx.type === 'id') {
                         enhancedLocators.push({
                             ...locator,
-                            type: locator.type + ' + Parent ID [Enhanced]',
-                            value: `//*[@id="${parentId}"]${value.substring(1)}`,
+                            type: locator.type + ' + Ancestor ID [Enhanced]',
+                            value: '//*[@id="' + ctx.value + '"]' + value.substring(1),
                             confidence: Math.min(95, locator.confidence + 5)
                         });
                     } else {
+                        var ancTag = ctx.el.tagName.toLowerCase();
                         enhancedLocators.push({
                             ...locator,
-                            type: locator.type + ' + Parent ID [Enhanced]',
-                            value: `#${parentId} ${value}`,
+                            type: locator.type + ' + Ancestor Class [Enhanced]',
+                            value: '//' + ancTag + '[contains(@class,"' + ctx.value + '")]' + value.substring(1),
+                            confidence: Math.min(95, locator.confidence + 3)
+                        });
+                    }
+                } else {
+                    // CSS locator
+                    if (ctx.type === 'id') {
+                        enhancedLocators.push({
+                            ...locator,
+                            type: locator.type + ' + Ancestor ID [Enhanced]',
+                            value: '#' + ctx.value + ' ' + value,
                             confidence: Math.min(95, locator.confidence + 5)
+                        });
+                    } else {
+                        var ancTag2 = ctx.el.tagName.toLowerCase();
+                        try { ancTag2 = CSS.escape(ancTag2); } catch(e) {}
+                        var escCls = ctx.value;
+                        try { escCls = CSS.escape(escCls); } catch(e) {}
+                        enhancedLocators.push({
+                            ...locator,
+                            type: locator.type + ' + Ancestor Class [Enhanced]',
+                            value: ancTag2 + '.' + escCls + ' ' + value,
+                            confidence: Math.min(95, locator.confidence + 3)
                         });
                     }
                 }
@@ -2115,8 +2507,12 @@
                 if (value.includes('data-testid')) score = 95;
                 else if (value.includes('aria-label')) score = 90;
                 else if (value.includes('#') || value.includes('@id=')) score = 90;
+                else if (value.includes('local-name()')) score = 88;
+                else if (value.includes('title') && (value.includes(':has') || value.includes('.//'))) score = 86;
+                else if (value.includes('ancestor::') || value.includes('text()')) score = 85;
                 else if (value.includes('[viewBox') || value.includes('@viewBox')) score = 80;
                 else if (value.includes('svg') && value.includes('.')) score = 75;
+                else if (value.includes('transform')) score = 68;
                 else if (value.includes('parent') && value.includes('id')) score = 85;
             } else if (elementType === 'checkbox') {
                 if (value.includes('name=') || value.includes('@name=')) score = 95;
@@ -2329,7 +2725,7 @@
             const id = element.id;
             const text = (element.textContent || '').trim().slice(0, 40);
             const ariaLabel = element.getAttribute('aria-label');
-            const className = element.className;
+            const className = element.getAttribute('class') || '';
             if (id) locators.push({ type: 'Span by ID', value: `#${id}`, confidence: 95, level: 'simple' });
             if (id) locators.push({ type: 'Span by ID XPath', value: `//span[@id="${id}"]`, confidence: 95, level: 'simple' });
             if (ariaLabel) {
@@ -2428,9 +2824,19 @@
         return n;
     }
 
-    function selectElement(element) {
-        if (!locatorGenerator) return;
+    function buildElementData(element) {
+        if (!locatorGenerator) return null;
+        var isSvg = locatorGenerator.isSVGElement(element);
+        if (isSvg) {
+            console.log('[SVG] buildElementData called for:', element.tagName, 'className:', element.getAttribute('class'));
+        }
         const locators = locatorGenerator.generateUnifiedLocators(element);
+        if (isSvg) {
+            var locCount = 0;
+            if (locators.xpath) ['simple','medium','advanced'].forEach(function(l){ if(locators.xpath[l]) locCount += locators.xpath[l].length; });
+            if (locators.css) ['simple','medium','advanced'].forEach(function(l){ if(locators.css[l]) locCount += locators.css[l].length; });
+            console.log('[SVG] generateUnifiedLocators returned, total locators:', locCount);
+        }
         // Capture the element's HTML (truncated to avoid excessive size)
         let outerHTML = '';
         try {
@@ -2493,7 +2899,7 @@
         var elementData = {
             tag: element.tagName.toLowerCase(),
             id: element.id || '',
-            className: element.className || '',
+            className: element.getAttribute('class') || '',
             text: element.textContent?.trim().substring(0, 100) || '',
             attributes: Object.fromEntries(Array.from(element.attributes).map(attr => [attr.name, attr.value])),
             keyAttrs: keyAttrs,
@@ -2510,8 +2916,49 @@
             pageUrl: window.location.href,
             pageTitle: document.title
         };
+        return elementData;
+    }
+
+    function previewElement(element) {
+        if (!locatorGenerator) return;
+        var elementData = buildElementData(element);
+        if (!elementData) return;
+        // Strip heavy fields for preview to keep it lightweight
+        var previewData = {
+            tag: elementData.tag,
+            id: elementData.id,
+            className: elementData.className,
+            text: elementData.text,
+            keyAttrs: elementData.keyAttrs,
+            locators: elementData.locators,
+            localHeuristic: elementData.localHeuristic,
+            elementType: elementData.elementType,
+            ancestors: elementData.ancestors
+        };
+        if (elementData.elementType === 'svg') {
+            console.log('[SVG] previewElement sending PREVIEW_ELEMENT, className type:', typeof previewData.className);
+        }
+        sendToSidebar('PREVIEW_ELEMENT', previewData);
+    }
+
+    function selectElement(element) {
+        if (!locatorGenerator) return;
+        var elementData = buildElementData(element);
+        if (!elementData) return;
         elementHistory.push(elementData);
         currentHistoryIndex = elementHistory.length - 1;
+
+        if (elementData.elementType === 'svg') {
+            console.log('[SVG] selectElement: sending ELEMENT_SELECTED, className type:', typeof elementData.className, 'value:', elementData.className);
+        }
+
+        console.log('[Debug] selectElement: elementData built, about to send ELEMENT_SELECTED', {
+            tag: elementData.tag,
+            hasLocators: !!elementData.locators,
+            hasLocalHeuristic: !!elementData.localHeuristic,
+            sidebarIframeExists: !!sidebarIframe,
+            sidebarIframeSrc: sidebarIframe ? sidebarIframe.src : 'N/A'
+        });
 
         // Send both full DOM snapshot and compact ARIA snapshot
         (function(){
@@ -2523,6 +2970,7 @@
         })();
         sendToSidebar('ELEMENT_SELECTED', elementData);
         sendToSidebar('ELEMENT_HISTORY_UPDATED', { elements: elementHistory });
+        console.log('[Debug] selectElement: ELEMENT_SELECTED sent');
         removeHighlight();
 
         // Enrich element with semantic DOM attributes (AXTree replacement for MV3)
@@ -2582,7 +3030,7 @@
         var elementData = {
             tag: element.tagName.toLowerCase(),
             id: element.id || '',
-            className: element.className || '',
+            className: element.getAttribute('class') || '',
             text: '',
             locators: null,
             localHeuristic: {
@@ -3192,96 +3640,336 @@
             }
 
             // 10. SVG-specific strategies (for SVG elements and their children)
+            // Enterprise-grade: reference Playwright codegen + SVG best practices
             if (isSvgElement) {
                 var parentSvg = getParentSvg(element);
 
+                // Helper: find HTML ancestors (non-SVG) for icon SVG pattern
+                function getHtmlAncestors(el, maxDepth) {
+                    var anc = [];
+                    var cur = el.parentElement;
+                    while (cur && cur.tagName && anc.length < maxDepth) {
+                        try {
+                            var ns = cur.namespaceURI || '';
+                            if (ns !== 'http://www.w3.org/2000/svg') {
+                                anc.push(cur);
+                            }
+                        } catch(e) {}
+                        cur = cur.parentElement;
+                    }
+                    return anc;
+                }
+
+                // Helper: filter meaningful class names (skip random/auto-generated)
+                function isMeaningfulCls(cls) {
+                    if (!cls || cls.length < 3) return false;
+                    if (/^\d/.test(cls)) return false;
+                    var patterns = [/^[a-z]\d+$/i, /^[a-f0-9]{8,}$/i, /[-_][a-f0-9]{6,}$/i];
+                    for (var i = 0; i < patterns.length; i++) {
+                        if (patterns[i].test(cls)) return false;
+                    }
+                    return true;
+                }
+
+                // Helper: check if browser supports :has()
+                function supportsHas() {
+                    try { document.querySelector(':has(*)'); return true; } catch(e) { return false; }
+                }
+
+                // Helper: find text siblings/ancestors in SVG for chart/flow pattern
+                function findRelatedText(el) {
+                    if (!parentSvg) return [];
+                    var results = [];
+                    var texts = parentSvg.querySelectorAll('text');
+                    for (var i = 0; i < texts.length; i++) {
+                        var txt = (texts[i].textContent || '').trim();
+                        if (!txt || txt.length > 30) continue;
+                        // Check if same group ancestor
+                        var curEl = el.parentElement;
+                        var curTxt = texts[i].parentElement;
+                        var depth = 0;
+                        while (curEl && curEl !== parentSvg && depth < 5) {
+                            if (curEl.contains(texts[i])) {
+                                results.push({ text: txt, depth: depth + 1, textEl: texts[i] });
+                                break;
+                            }
+                            curEl = curEl.parentElement;
+                            depth++;
+                        }
+                    }
+                    return results.sort(function(a, b) { return a.depth - b.depth; });
+                }
+
+                var htmlAncestors = getHtmlAncestors(parentSvg || element, 6);
+                var hasHasSupport = supportsHas();
+                var relatedTexts = !parentSvg || tag === 'svg' ? [] : findRelatedText(element);
+
+                // ===== Strategy S1: Role + name (Playwright style, ARIA-first) =====
+                var role = element.getAttribute('role');
+                var ariaLabel = element.getAttribute('aria-label');
+                if (role && ariaLabel) {
+                    var roleSel = tag + '[role="' + role + '"][aria-label="' + ariaLabel.replace(/"/g,'\\"') + '"]';
+                    var roleR = tryCss(roleSel, 'svg role+aria-label');
+                    if (roleR) return roleR;
+                }
+
+                // ===== Strategy S2: HTML ancestor + svg (icon button pattern) =====
+                // Enterprise: most icon SVGs are wrapped in <div class="xxx-icon">
+                if (htmlAncestors.length > 0) {
+                    for (var depth = 1; depth <= Math.min(3, htmlAncestors.length); depth++) {
+                        var anc = htmlAncestors[depth - 1];
+                        var ancId = anc.id;
+                        var ancClsList = getClassList(anc).filter(isMeaningfulCls);
+
+                        if (ancId) {
+                            var idSel = '#' + esc(ancId) + ' svg';
+                            if (tag !== 'svg') idSel = '#' + esc(ancId) + ' ' + tag;
+                            var idR = tryCss(idSel, 'html-ancestor#' + ancId + (tag==='svg'?' svg':' '+tag));
+                            if (idR) return idR;
+                            
+                            if (tag !== 'svg') {
+                                var idSelWithAttr = '#' + esc(ancId) + ' svg ' + tag;
+                                var idR2 = tryCss(idSelWithAttr, 'html-ancestor#' + ancId + ' svg ' + tag);
+                                if (idR2) return idR2;
+                            }
+                        }
+
+                        if (ancClsList.length > 0) {
+                            var clsSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + ' svg';
+                            if (tag !== 'svg') clsSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + ' ' + tag;
+                            var clsR = tryCss(clsSel, 'html-ancestor.' + ancClsList[0] + (tag==='svg'?' svg':' '+tag));
+                            if (clsR) return clsR;
+
+                            var descSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + ' > svg';
+                            if (tag !== 'svg') descSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + ' > ' + tag;
+                            var descR = tryCss(descSel, 'html-ancestor>' + (tag==='svg'?'svg':tag));
+                            if (descR) return descR;
+
+                            if (ancClsList.length > 1) {
+                                var multiClsSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + '.' + esc(ancClsList[1]) + ' svg';
+                                if (tag !== 'svg') multiClsSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + '.' + esc(ancClsList[1]) + ' ' + tag;
+                                var multiClsR = tryCss(multiClsSel, 'html-ancestor.' + ancClsList[0] + '.' + ancClsList[1] + (tag==='svg'?' svg':' '+tag));
+                                if (multiClsR) return multiClsR;
+                            }
+
+                            if (tag !== 'svg') {
+                                var clsSvgTagSel = anc.tagName.toLowerCase() + '.' + esc(ancClsList[0]) + ' svg ' + tag;
+                                var clsSvgTagR = tryCss(clsSvgTagSel, 'html-ancestor.' + ancClsList[0] + ' svg ' + tag);
+                                if (clsSvgTagR) return clsSvgTagR;
+                            }
+                        }
+                    }
+                }
+
+                // ===== Strategy S3: :has(title) CSS4 pattern (tooltip SVGs) =====
+                if (hasHasSupport) {
+                    var titleChild = null;
+                    try {
+                        var kids = element.children;
+                        for (var ti = 0; ti < kids.length; ti++) {
+                            if (kids[ti].tagName.toLowerCase() === 'title') { titleChild = kids[ti]; break; }
+                        }
+                    } catch(e) {}
+                    if (titleChild) {
+                        var hasTitleSel = tag + ':has(> title)';
+                        var hasR = tryCss(hasTitleSel, 'svg:has(title)');
+                        if (hasR) return hasR;
+                    }
+                }
+
+                // ===== Strategy S4: Text anchor method (chart/flow diagram pattern) =====
+                // XPath: find text -> go up to g -> find target shape
+                if (relatedTexts.length > 0) {
+                    for (var ri = 0; ri < Math.min(3, relatedTexts.length); ri++) {
+                        var anchor = relatedTexts[ri];
+                        var exactTextXp = '//*[local-name()="text" and normalize-space(text())="' + xpEsc(anchor.text) + '"]/ancestor::*[local-name()="g"][' + anchor.depth + ']//*[local-name()="' + tag + '"]';
+                        var txtR = tryXp(exactTextXp, 'svg-text-anchor(exact)');
+                        if (txtR) return txtR;
+
+                        var containsTextXp = '//*[local-name()="text" and contains(text(), "' + xpEsc(anchor.text.slice(0,5)) + '")]/ancestor::*[local-name()="g"][' + anchor.depth + ']//*[local-name()="' + tag + '"]';
+                        txtR = tryXp(containsTextXp, 'svg-text-anchor(contains)');
+                        if (txtR) return txtR;
+                    }
+                }
+
+                // ===== Strategy S5: Parent SVG viewBox + tag =====
                 if (parentSvg) {
                     var parentViewBox = parentSvg.getAttribute('viewBox');
                     var parentSvgId = parentSvg.id || parentSvg.getAttribute('id');
 
-                    // Strategy: parent SVG viewBox + tag
                     if (parentViewBox) {
                         var vbSel = 'svg[viewBox="' + parentViewBox + '"] ' + tag;
                         var vbR = tryCss(vbSel, 'svg[viewBox] tag');
                         if (vbR) return vbR;
-                        var vbXp = '//svg[@viewBox="' + xpEsc(parentViewBox) + '"]//' + tag;
-                        vbR = tryXp(vbXp, 'svg[viewBox]//tag');
+                        var vbXp = '//*[local-name()="svg"][@viewBox="' + xpEsc(parentViewBox) + '"]//*[local-name()="' + tag + '"]';
+                        vbR = tryXp(vbXp, 'svg[viewBox]//tag(local-name)');
                         if (vbR) return vbR;
                     }
 
-                    // Strategy: parent SVG ID + tag
                     if (parentSvgId) {
-                        var idSel = 'svg#' + esc(parentSvgId) + ' ' + tag;
-                        var idR = tryCss(idSel, 'svg#id tag');
-                        if (idR) return idR;
+                        var idSel2 = 'svg#' + esc(parentSvgId) + ' ' + tag;
+                        var idR2 = tryCss(idSel2, 'svg#id tag');
+                        if (idR2) return idR2;
                     }
+                }
 
-                    // Strategy: SVG-specific attributes
-                    var stroke = element.getAttribute('stroke');
-                    var fill = element.getAttribute('fill');
-                    var strokeWidth = element.getAttribute('stroke-width');
+                // ===== Strategy S6: SVG-specific attributes =====
+                var stroke = element.getAttribute('stroke');
+                var fill = element.getAttribute('fill');
+                var strokeWidth = element.getAttribute('stroke-width');
+                var transform = element.getAttribute('transform');
 
-                    if (stroke) {
-                        var strokeSel = tag + '[stroke="' + stroke + '"]';
-                        var strokeR = tryCss(strokeSel, 'svg-tag[stroke]');
-                        if (strokeR) return strokeR;
+                if (stroke && stroke !== 'currentColor' && stroke !== 'none') {
+                    var strokeSel = tag + '[stroke="' + stroke + '"]';
+                    var strokeR = tryCss(strokeSel, 'svg-tag[stroke]');
+                    if (strokeR) return strokeR;
+                }
+
+                if (fill && tag !== 'svg' && fill !== 'currentColor' && fill !== 'none') {
+                    var fillSel = tag + '[fill="' + fill + '"]';
+                    var fillR = tryCss(fillSel, 'svg-tag[fill]');
+                    if (fillR) return fillR;
+                }
+
+                if (stroke && fill && tag !== 'svg' && stroke !== 'currentColor' && fill !== 'currentColor') {
+                    var comboSel = tag + '[stroke="' + stroke + '"][fill="' + fill + '"]';
+                    var comboR = tryCss(comboSel, 'svg-tag[stroke+fill]');
+                    if (comboR) return comboR;
+                }
+
+                // Transform attribute (fixed layout pattern)
+                if (transform && transform.length > 5) {
+                    var tShort = transform.slice(0, 25);
+                    var transSel = tag + '[transform*="' + tShort + '"]';
+                    var transR = tryCss(transSel, 'svg-tag[transform*=]');
+                    if (transR) return transR;
+                }
+
+                // ===== Strategy S7: Shape-specific attributes =====
+                if (tag === 'circle') {
+                    var cx = element.getAttribute('cx');
+                    var cy = element.getAttribute('cy');
+                    var rad = element.getAttribute('r');
+                    if (cx && cy && rad) {
+                        var circSel = 'circle[cx="' + cx + '"][cy="' + cy + '"][r="' + rad + '"]';
+                        var circR = tryCss(circSel, 'circle[cx+cy+r]');
+                        if (circR) return circR;
                     }
+                }
 
-                    if (fill && tag !== 'svg') {
-                        var fillSel = tag + '[fill="' + fill + '"]';
-                        var fillR = tryCss(fillSel, 'svg-tag[fill]');
-                        if (fillR) return fillR;
+                if (tag === 'rect' || tag === 'image') {
+                    var rx = element.getAttribute('x');
+                    var ry = element.getAttribute('y');
+                    var rw = element.getAttribute('width');
+                    var rh = element.getAttribute('height');
+                    if (rx && ry && rw && rh) {
+                        var rectSel = tag + '[x="' + rx + '"][y="' + ry + '"][width="' + rw + '"][height="' + rh + '"]';
+                        var rectR = tryCss(rectSel, 'rect[x+y+w+h]');
+                        if (rectR) return rectR;
                     }
+                }
 
-                    if (stroke && fill && tag !== 'svg') {
-                        var comboSel = tag + '[stroke="' + stroke + '"][fill="' + fill + '"]';
-                        var comboR = tryCss(comboSel, 'svg-tag[stroke+fill]');
-                        if (comboR) return comboR;
+                if (tag === 'path') {
+                    var dAttr = element.getAttribute('d');
+                    if (dAttr && dAttr.length > 10) {
+                        // Enterprise: use middle section of d for better noise resistance
+                        var midStart = Math.floor(dAttr.length / 3);
+                        var midEnd = Math.min(midStart + 20, dAttr.length);
+                        var partialD = dAttr.slice(midStart, midEnd);
+                        var parentVb = parentSvg ? parentSvg.getAttribute('viewBox') : '';
+                        var pathXp = '//*[local-name()="svg"]';
+                        if (parentVb) pathXp = '//*[local-name()="svg"][@viewBox="' + xpEsc(parentVb) + '"]';
+                        pathXp += '//*[local-name()="path"][contains(@d, "' + xpEsc(partialD) + '")]';
+                        var pathR = tryXp(pathXp, 'path[contains(d,mid)]');
+                        if (pathR) return pathR;
                     }
+                }
 
-                    // Strategy: circle by cx+cy+r
-                    if (tag === 'circle') {
-                        var cx = element.getAttribute('cx');
-                        var cy = element.getAttribute('cy');
-                        var rad = element.getAttribute('r');
-                        if (cx && cy && rad) {
-                            var circSel = 'circle[cx="' + cx + '"][cy="' + cy + '"][r="' + rad + '"]';
-                            var circR = tryCss(circSel, 'circle[cx+cy+r]');
-                            if (circR) return circR;
-                        }
-                    }
-
-                    // Strategy: rect by x+y+width+height
-                    if (tag === 'rect' || tag === 'image') {
-                        var rx = element.getAttribute('x');
-                        var ry = element.getAttribute('y');
-                        var rw = element.getAttribute('width');
-                        var rh = element.getAttribute('height');
-                        if (rx && ry && rw && rh) {
-                            var rectSel = tag + '[x="' + rx + '"][y="' + ry + '"][width="' + rw + '"][height="' + rh + '"]';
-                            var rectR = tryCss(rectSel, 'rect[x+y+w+h]');
-                            if (rectR) return rectR;
-                        }
-                    }
-
-                    // Strategy: path by d (partial)
-                    if (tag === 'path') {
-                        var dAttr = element.getAttribute('d');
-                        if (dAttr && dAttr.length > 5) {
-                            var partialD = dAttr.slice(0, 15);
-                            var pathXp = '//svg[@viewBox="' + xpEsc(parentViewBox || '') + '"]//path[starts-with(@d, "' + xpEsc(partialD) + '")]';
-                            var pathR = tryXp(pathXp, 'path[starts-with(d)]');
-                            if (pathR) return pathR;
-                        }
-                    }
-
-                    // Strategy: position index under parent SVG
-                    var sibIdx = getSiblingIndex(element);
-                    if (sibIdx > 0) {
-                        if (parentViewBox) {
-                            var nthSel = 'svg[viewBox="' + parentViewBox + '"] ' + tag + ':nth-of-type(' + sibIdx + ')';
+                // ===== Strategy S8: Position index under parent SVG (last resort) =====
+                var sibIdx = getSiblingIndex(element);
+                if (sibIdx > 0) {
+                    if (parentSvg) {
+                        var pVb = parentSvg.getAttribute('viewBox');
+                        if (pVb) {
+                            var nthSel = 'svg[viewBox="' + pVb + '"] ' + tag + ':nth-of-type(' + sibIdx + ')';
                             var nthR = tryCss(nthSel, 'svg[viewBox] tag:nth-of-type');
                             if (nthR) return nthR;
+                        }
+                    }
+                }
+
+                // ===== Strategy S9: Context-aware fallback (never return just "svg") =====
+                // Build a locator using ancestor context + position to ensure uniqueness
+                if (isSvgElement) {
+                    var ctxPath = '';
+                    var ctxAnc = element.parentElement;
+                    var ctxDepth = 0;
+
+                    // Walk up to find an ancestor with id or meaningful class
+                    while (ctxAnc && ctxAnc !== document.body && ctxDepth < 6) {
+                        var ctxId = ctxAnc.id;
+                        var ctxCls = getClassList(ctxAnc).filter(isMeaningfulCls);
+                        var ctxTag = ctxAnc.tagName.toLowerCase();
+
+                        if (ctxId) {
+                            ctxPath = '#' + esc(ctxId) + ' ' + (ctxPath ? ctxPath : tag);
+                            break;
+                        }
+                        if (ctxCls.length > 0) {
+                            ctxPath = ctxTag + '.' + esc(ctxCls[0]) + ' ' + (ctxPath ? ctxPath : tag);
+                            break;
+                        }
+                        // No id or class on this ancestor, prepend tag
+                        var childTag = ctxPath ? ctxPath.split(' ')[0] : tag;
+                        var childIdx = 1;
+                        try {
+                            var ctxSiblings = ctxAnc.parentElement.querySelectorAll(ctxTag);
+                            for (var si = 0; si < ctxSiblings.length; si++) {
+                                if (ctxSiblings[si].isSameNode(ctxAnc)) { childIdx = si + 1; break; }
+                            }
+                        } catch(e) {}
+                        ctxPath = ctxTag + ':nth-of-type(' + childIdx + ') > ' + (ctxPath ? ctxPath : tag);
+                        ctxAnc = ctxAnc.parentElement;
+                        ctxDepth++;
+                    }
+
+                    if (ctxPath) {
+                        var ctxR = tryCss(ctxPath, 'svg-context-fallback');
+                        if (ctxR) return ctxR;
+
+                        // Try XPath equivalent with local-name for SVG namespace safety
+                        var ctxXp = '';
+                        var xpAnc = element.parentElement;
+                        var xpDepth = 0;
+                        while (xpAnc && xpAnc !== document.body && xpDepth < 6) {
+                            var xpId = xpAnc.id;
+                            var xpCls = getClassList(xpAnc).filter(isMeaningfulCls);
+                            var xpTag = xpAnc.tagName.toLowerCase();
+
+                            if (xpId) {
+                                ctxXp = '//*[@id="' + xpEsc(xpId) + '"]';
+                                break;
+                            }
+                            if (xpCls.length > 0) {
+                                ctxXp = '//' + xpTag + '[contains(@class,"' + xpEsc(xpCls[0]) + '")]';
+                                break;
+                            }
+                            xpAnc = xpAnc.parentElement;
+                            xpDepth++;
+                        }
+
+                        if (ctxXp) {
+                            var svgXpTarget = isSvgElement ? '//*[local-name()="' + tag + '"]' : '//' + tag;
+                            var ctxXpFull = ctxXp + '//' + (tag === 'svg' ? '*[local-name()="svg"]' : '*[local-name()="svg"]//*[local-name()="' + tag + '"]');
+                            var ctxXpR = tryXp(ctxXpFull, 'svg-context-fallback-xp');
+                            if (ctxXpR) return ctxXpR;
+
+                            // Add position index for SVG children
+                            if (tag !== 'svg' && sibIdx > 0) {
+                                var ctxXpPos = ctxXp + '//*[local-name()="svg"]//*[local-name()="' + tag + '"][' + sibIdx + ']';
+                                var ctxXpPosR = tryXp(ctxXpPos, 'svg-context-fallback-xp[pos]');
+                                if (ctxXpPosR) return ctxXpPosR;
+                            }
                         }
                     }
                 }
@@ -3305,6 +3993,28 @@
             sessionStorage.setItem('elementLocatorSessionId', sessionId);
         }
         return sessionId;
+    }
+
+    function findDialogOrModal(element) {
+        if (!element) return null;
+        var cur = element;
+        while (cur && cur !== document.documentElement) {
+            if (cur.tagName) {
+                var tag = cur.tagName.toLowerCase();
+                if (tag === 'dialog') return cur;
+                var role = cur.getAttribute('role');
+                if (role === 'dialog' || role === 'alertdialog') return cur;
+                var cls = cur.className;
+                if (cls && typeof cls === 'string' && /(modal|Modal|dialog|Dialog|popup|Popover|drawer|Drawer)/.test(cls)) {
+                    var style = getComputedStyle(cur);
+                    if (style.position === 'fixed' || style.position === 'absolute') {
+                        return cur;
+                    }
+                }
+            }
+            cur = cur.parentElement;
+        }
+        return null;
     }
 
     // Handles element clicks for locator mode.
@@ -3368,6 +4078,9 @@
         highlightElement(element);
     }
 
+    let previewDebounceTimer = null;
+    let lastPreviewedElement = null;
+
     function handleMouseOver(event) {
         if (!isLocatorModeActive) return;
         if (window.location.origin !== currentOrigin) { toggleLocatorMode(); return; }
@@ -3408,7 +4121,18 @@
         if (element.closest('#elementLocatorContainer')) return;
         if (element.closest('#elementLocatorOverlay')) return;
         if (DOM_ISOLATION_CONFIG.shouldExclude(element)) return;
+
+        if (lastPreviewedElement === element) return;
+        lastPreviewedElement = element;
+
         highlightElement(element);
+
+        if (previewDebounceTimer) {
+            clearTimeout(previewDebounceTimer);
+        }
+        previewDebounceTimer = safeSetTimeout(function() {
+            previewElement(element);
+        }, 80);
     }
 
     function handleMouseOut(event) {
@@ -3422,12 +4146,19 @@
         // Check if the relatedTarget is still within the same element
         if (event.relatedTarget && element.contains(event.relatedTarget)) return;
         removeHighlight();
+        lastPreviewedElement = null;
+        if (previewDebounceTimer) {
+            clearTimeout(previewDebounceTimer);
+            previewDebounceTimer = null;
+        }
+        sendToSidebar('CLEAR_PREVIEW', null);
     }
 
     function highlightElement(element) {
         removeHighlight();
         const rect = element.getBoundingClientRect();
         highlightOverlay = document.createElement('div');
+        highlightOverlay.setAttribute('data-extension-element', 'true');
         const elementType = locatorGenerator?.detectElementType(element);
         let borderColor = '#3498db';
         let backgroundColor = 'rgba(52, 152, 219, 0.1)';
@@ -3482,18 +4213,13 @@
                 break;
         }
 
-        highlightOverlay.style.cssText = `
-            position: fixed !important;
-            top: ${rect.top}px !important;
-            left: ${rect.left}px !important;
-            width: ${rect.width}px !important;
-            height: ${rect.height}px !important;
-            border: 2px solid ${borderColor} !important;
-            background: ${backgroundColor} !important;
-            z-index: 2147483646 !important;
-            pointer-events: none !important;
-            box-shadow: 0 0 10px rgba(52, 152, 219, 0.5) !important;
-        `;
+        highlightOverlay.style.setProperty('width', rect.width + 'px', 'important');
+        highlightOverlay.style.setProperty('height', rect.height + 'px', 'important');
+        highlightOverlay.style.setProperty('border', '2px solid ' + borderColor, 'important');
+        highlightOverlay.style.setProperty('background', backgroundColor, 'important');
+        highlightOverlay.style.setProperty('z-index', '2147483647', 'important');
+        highlightOverlay.style.setProperty('pointer-events', 'none', 'important');
+        highlightOverlay.style.setProperty('box-shadow', '0 0 10px rgba(52, 152, 219, 0.5)', 'important');
 
         const indicator = document.createElement('div');
         indicator.style.cssText = `
@@ -3510,7 +4236,22 @@
         `;
         indicator.textContent = indicatorText;
         highlightOverlay.appendChild(indicator);
-        document.body.appendChild(highlightOverlay);
+        
+        var targetContainer = getTopMostContainer(element);
+        if (targetContainer && targetContainer !== document.body && targetContainer.tagName && targetContainer.tagName.toLowerCase() === 'dialog') {
+            var dialogRect = targetContainer.getBoundingClientRect();
+            highlightOverlay.style.setProperty('position', 'absolute', 'important');
+            highlightOverlay.style.setProperty('top', (rect.top - dialogRect.top) + 'px', 'important');
+            highlightOverlay.style.setProperty('left', (rect.left - dialogRect.left) + 'px', 'important');
+            targetContainer.appendChild(highlightOverlay);
+        } else {
+            highlightOverlay.style.setProperty('position', 'fixed', 'important');
+            highlightOverlay.style.setProperty('top', rect.top + 'px', 'important');
+            highlightOverlay.style.setProperty('left', rect.left + 'px', 'important');
+            document.body.appendChild(highlightOverlay);
+        }
+        
+        ensureOverlayOnTop(highlightOverlay);
     }
 
     // Closes the sidebar.
@@ -3792,6 +4533,37 @@
     }
 
     // Manages event listeners for locator mode.
+    // MutationObserver for dynamically created iframes (e.g., modal dialogs using iframe)
+    let iframeObserver = null;
+    function startIframeObserver() {
+        if (iframeObserver) return;
+        iframeObserver = new MutationObserver(function(mutations) {
+            if (!isLocatorModeActive) return;
+            var hasNewIframe = false;
+            for (var i = 0; i < mutations.length; i++) {
+                var added = mutations[i].addedNodes;
+                for (var j = 0; j < added.length; j++) {
+                    var node = added[j];
+                    if (node.tagName && node.tagName.toLowerCase() === 'iframe') {
+                        hasNewIframe = true;
+                    } else if (node.querySelectorAll) {
+                        if (node.querySelectorAll('iframe').length > 0) hasNewIframe = true;
+                    }
+                }
+            }
+            if (hasNewIframe) {
+                setTimeout(function() { attachListenersToIframes(); }, 100);
+            }
+        });
+        iframeObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    function stopIframeObserver() {
+        if (iframeObserver) {
+            iframeObserver.disconnect();
+            iframeObserver = null;
+        }
+    }
+
     function toggleLocatorMode() {
         console.log('[Content] toggleLocatorMode called, current state:', isLocatorModeActive);
         isLocatorModeActive = !isLocatorModeActive;
@@ -3804,6 +4576,7 @@
             addEventListenerSafely(document, "mouseout", handleMouseOut, mouseOptions);
             addEventListenerSafely(document, "click", handleElementClick, clickOptions);
             attachListenersToIframes();
+            startIframeObserver();
             listenersAttached = true;
             document.body.style.cursor = "crosshair";
             console.log('[Content] Locator mode activated - listeners added');
@@ -3811,8 +4584,15 @@
             (function(){ try { var sn = (typeof capturePageSnapshot==='function')?capturePageSnapshot():null; var ariaSn = (typeof captureAriaSnapshot==='function')?captureAriaSnapshot():null; sendToSidebar('PAGE_SNAPSHOT', { snapshot: sn, ariaSnapshot: ariaSn }); } catch(e){} })();
         } else {
             removeAllEventListeners();
+            stopIframeObserver();
             document.body.style.cursor = "";
             removeHighlight();
+            lastPreviewedElement = null;
+            if (previewDebounceTimer) {
+                clearTimeout(previewDebounceTimer);
+                previewDebounceTimer = null;
+            }
+            sendToSidebar('CLEAR_PREVIEW', null);
             console.log('[Content] Locator mode deactivated - listeners removed');
         }
 
@@ -3831,21 +4611,67 @@
     let sidebarReadyCheckTimer = null;
 
     function sendToSidebar(type, data) {
+        sendToBackgroundForStandalone(type, data);
+        
         if (!sidebarIframe) {
+            console.log('[Debug] sendToSidebar: no sidebarIframe, queuing', type);
             queueSidebarMessage(type, data);
             return;
         }
         try {
             const cw = sidebarIframe.contentWindow;
             if (!cw) {
+                console.log('[Debug] sendToSidebar: no contentWindow, queuing', type);
                 queueSidebarMessage(type, data);
                 return;
             }
-            cw.postMessage({ type, data }, '*');
+            var payload = { type, data };
+            try {
+                cw.postMessage(payload, '*');
+                console.log('[Debug] sendToSidebar: sent', type);
+            } catch (postErr) {
+                console.warn('[Debug] sendToSidebar: postMessage failed for', type, postErr && postErr.message);
+                // Try with stripped data for large payloads
+                if (type === 'ELEMENT_SELECTED' && data) {
+                    var stripped = {
+                        tag: data.tag,
+                        id: data.id,
+                        className: data.className,
+                        text: data.text,
+                        keyAttrs: data.keyAttrs,
+                        ancestors: data.ancestors,
+                        locators: data.locators,
+                        localHeuristic: data.localHeuristic,
+                        elementType: data.elementType,
+                        timestamp: data.timestamp,
+                        pageUrl: data.pageUrl,
+                        pageTitle: data.pageTitle
+                    };
+                    try {
+                        cw.postMessage({ type: type, data: stripped }, '*');
+                        console.log('[Debug] sendToSidebar: sent stripped ELEMENT_SELECTED');
+                    } catch (e2) {
+                        console.error('[Debug] sendToSidebar: even stripped payload failed', e2 && e2.message);
+                        queueSidebarMessage(type, stripped);
+                    }
+                } else {
+                    queueSidebarMessage(type, data);
+                }
+            }
         } catch (e) {
+            console.warn('[Debug] sendToSidebar: general error', type, e && e.message);
             queueSidebarMessage(type, data);
             scheduleProcessQueue();
         }
+    }
+
+    function sendToBackgroundForStandalone(type, data) {
+        if (!chrome || !chrome.runtime || !chrome.runtime.sendMessage) return;
+        try {
+            chrome.runtime.sendMessage({ type, data }, () => {
+                try { void chrome.runtime.lastError; } catch (e) {}
+            });
+        } catch (e) {}
     }
 
     function copyToClipboard(text) {
@@ -3950,7 +4776,7 @@
                     context.headings.push({
                         tag: el.tagName.toLowerCase(),
                         id: el.id || '',
-                        class: el.className?.substring(0, 60) || '',
+                        class: (el.getAttribute('class') || '').substring(0, 60),
                         text: text
                     });
                 }
@@ -3961,7 +4787,7 @@
                 const label = el.getAttribute('aria-label') || el.getAttribute('name') || el.id || '';
                 context.forms.push({
                     id: el.id || '',
-                    class: el.className?.substring(0, 60) || '',
+                    class: (el.getAttribute('class') || '').substring(0, 60),
                     action: el.getAttribute('action') || '',
                     method: el.getAttribute('method') || 'get',
                     label: label,
@@ -3975,7 +4801,7 @@
                 const entry = {
                     tag: el.tagName.toLowerCase(),
                     id: el.id || '',
-                    class: el.className?.substring(0, 60) || '',
+                    class: (el.getAttribute('class') || '').substring(0, 60),
                     text: text,
                     type: el.getAttribute('type') || '',
                     name: el.getAttribute('name') || '',
@@ -3998,7 +4824,7 @@
                     context.containers.push({
                         tag: el.tagName.toLowerCase(),
                         id: el.id || '',
-                        class: el.className?.substring(0, 60) || '',
+                        class: (el.getAttribute('class') || '').substring(0, 60),
                         role: el.getAttribute('role') || '',
                         text: text
                     });

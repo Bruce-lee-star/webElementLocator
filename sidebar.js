@@ -215,6 +215,54 @@ function editListElement(index) {
   }
 }
 
+function updatePreview(elementData) {
+  var previewSection = document.getElementById('previewSection');
+  var previewContent = document.getElementById('previewContent');
+  if (!previewContent) return;
+
+  if (!elementData) {
+    previewSection.classList.remove('has-preview');
+    previewContent.innerHTML = '<div class="preview-empty">Start picking and hover over an element to preview its locator</div>';
+    return;
+  }
+
+  previewSection.classList.add('has-preview');
+  var bestLoc = getBestLocator(elementData);
+  var tag = elementData.tag || 'element';
+  var text = (elementData.text || '').trim().slice(0, 60);
+  var id = elementData.id || '';
+  var cls = elementData.className || '';
+  if (typeof cls === 'string') {
+    cls = cls.trim().split(/\s+/).slice(0, 3).join(' ');
+  } else {
+    cls = '';
+  }
+
+  var html = '<div class="preview-item">' +
+    '<div class="preview-label">Best Locator <span class="locator-badge ' + bestLoc.type + '">' + bestLoc.type.toUpperCase() + '</span></div>' +
+    '<div class="preview-value">' + escapeHtml(bestLoc.value) + '</div>' +
+    '</div>';
+
+  html += '<div class="preview-meta">';
+  html += '<div class="preview-meta-item"><span class="meta-badge">Tag:</span> ' + escapeHtml(tag) + '</div>';
+  if (id) {
+    html += '<div class="preview-meta-item"><span class="meta-badge">ID:</span> ' + escapeHtml(id) + '</div>';
+  }
+  if (cls) {
+    html += '<div class="preview-meta-item"><span class="meta-badge">Class:</span> ' + escapeHtml(cls) + '</div>';
+  }
+  if (text) {
+    html += '<div class="preview-meta-item"><span class="meta-badge">Text:</span> ' + escapeHtml(text) + '</div>';
+  }
+  html += '</div>';
+
+  previewContent.innerHTML = html;
+}
+
+function clearPreview() {
+  updatePreview(null);
+}
+
 function toggleCapturedCollapse() {
   var section = document.getElementById('capturedElementsSection');
   var list = document.getElementById('capturedElementsList');
@@ -243,6 +291,21 @@ function handleSidebarMessage(type, data){
       btn.classList.toggle('is-active', active);
       btn.style.background = active ? '#e74c3c' : '';
     }
+    if (!active) {
+      clearPreview();
+    }
+    return;
+  }
+  if (type === 'PREVIEW_ELEMENT') {
+    try {
+      updatePreview(data);
+    } catch(e) {
+      console.error('[Debug] PREVIEW_ELEMENT: error updating preview:', e);
+    }
+    return;
+  }
+  if (type === 'CLEAR_PREVIEW') {
+    clearPreview();
     return;
   }
   if (type === 'ELEMENT_SELECTED') {
@@ -250,8 +313,47 @@ function handleSidebarMessage(type, data){
     var now = new Date();
     elementData.time = now.toLocaleTimeString();
     elementData.ts = now.getTime();
-    capturedElements.push(elementData);
-    updateCapturedElementsList();
+    
+    console.log('[Debug] ELEMENT_SELECTED received:', {
+      tag: elementData.tag,
+      hasLocators: !!elementData.locators,
+      locatorsType: typeof elementData.locators,
+      locatorsKeys: elementData.locators ? Object.keys(elementData.locators) : [],
+      cssKeys: elementData.locators && elementData.locators.css ? Object.keys(elementData.locators.css) : [],
+      cssAdvancedLen: elementData.locators && elementData.locators.css && elementData.locators.css.advanced ? elementData.locators.css.advanced.length : 0,
+      cssAdvancedFirst: elementData.locators && elementData.locators.css && elementData.locators.css.advanced && elementData.locators.css.advanced[0] ? elementData.locators.css.advanced[0].value : 'N/A',
+      hasLocalHeuristic: !!elementData.localHeuristic,
+      localHeuristicCss: elementData.localHeuristic ? elementData.localHeuristic.css : 'N/A'
+    });
+    
+    try {
+      var bestLoc = getBestLocator(elementData);
+      console.log('[Debug] getBestLocator returned:', bestLoc);
+    } catch(e) {
+      console.error('[Debug] getBestLocator error:', e);
+    }
+    
+    try {
+      capturedElements.push(elementData);
+      updateCapturedElementsList();
+      console.log('[Debug] ELEMENT_SELECTED: added to list, total:', capturedElements.length);
+    } catch(e) {
+      console.error('[Debug] ELEMENT_SELECTED: error adding to list:', e);
+    }
+    
+    // Clear preview after capture and show a brief confirmation
+    clearPreview();
+    var previewSection = document.getElementById('previewSection');
+    var previewContent = document.getElementById('previewContent');
+    if (previewSection && previewContent) {
+      previewSection.classList.add('has-preview');
+      previewContent.innerHTML = '<div class="preview-empty" style="color:#2e7d32; font-weight:600;">✓ Element captured! Hover another element to preview</div>';
+      setTimeout(function(){
+        if (previewContent && previewContent.innerHTML.indexOf('Element captured') >= 0) {
+          clearPreview();
+        }
+      }, 1200);
+    }
     return;
   }
   if (type === 'ELEMENT_HISTORY_UPDATED') {
@@ -264,12 +366,15 @@ function handleSidebarMessage(type, data){
 
 function handleMessageFromParent(event){
   try {
+    console.log('[Debug] sidebar received message:', event.data && event.data.type, event.data);
     var src = (event.data && event.data.source) || '';
     if (src === 'sidebar') return;
     var payload = event.data || {};
     if (!payload.type) return;
     handleSidebarMessage(payload.type, payload.data);
-  } catch (e) {}
+  } catch (e) {
+    console.error('[Debug] sidebar handleMessageFromParent error:', e);
+  }
 }
 
 function onSidebarReady(){
@@ -300,6 +405,15 @@ function setupEventListeners(){
 
   var copyAllBtn = document.getElementById('copyAllCapturedBtn');
   if (copyAllBtn) copyAllBtn.addEventListener('click', copyAllLocators);
+
+  var standaloneBtn = document.getElementById('openStandaloneBtn');
+  if (standaloneBtn) standaloneBtn.addEventListener('click', function() {
+    try {
+      chrome.runtime.sendMessage({ type: 'OPEN_STANDALONE' });
+    } catch (e) {
+      console.error('Failed to open standalone window:', e);
+    }
+  });
 
   var header = document.getElementById('capturedElementsHeader');
   if (header) {

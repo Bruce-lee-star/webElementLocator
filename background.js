@@ -1,7 +1,50 @@
 let sidebarStates = new Map();
 let locatorModeStates = new Map();
 let tabOrigins = new Map();
+let standaloneWindowId = null;
 
+async function createStandaloneWindow() {
+    try {
+        if (standaloneWindowId != null) {
+            await chrome.windows.update(standaloneWindowId, { focused: true });
+            return;
+        }
+        var extensionUrl = chrome.runtime.getURL('standalone.html');
+        var win = await chrome.windows.create({
+            url: extensionUrl,
+            type: 'popup',
+            width: 400,
+            height: 600,
+            left: 100,
+            top: 100,
+            focused: true
+        });
+        standaloneWindowId = win.id;
+    } catch (e) {
+        console.error('Failed to create standalone window:', e);
+    }
+}
+
+function forwardToStandalone(type, data) {
+    if (standaloneWindowId == null) return;
+    try {
+        chrome.windows.get(standaloneWindowId, function(window) {
+            if (chrome.runtime.lastError || !window) {
+                standaloneWindowId = null;
+                return;
+            }
+            try {
+                chrome.tabs.sendMessage(window.tabs[0].id, { type, data }, () => {
+                    try { void chrome.runtime.lastError; } catch (e) {}
+                });
+            } catch (e) {
+                standaloneWindowId = null;
+            }
+        });
+    } catch (e) {
+        standaloneWindowId = null;
+    }
+}
 async function setIconForTab(tabId, active) {
     try {
         await chrome.action.setBadgeText({ tabId: tabId, text: active ? "ON" : "" });
@@ -106,6 +149,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (type === "PING") { try { sendResponse && sendResponse({status: "pong"}); } catch (e) {} return false; }
         if (type === "SET_SIDEBAR_EXPLICITLY_CLOSED") { try { chrome.storage.local.set({isSidebarExplicitlyClosed: request.isClosed}, () => { try { void chrome.runtime.lastError; } catch (e) {} }); } catch (e) {} try { sendResponse && sendResponse({ ok: true }); } catch (e) {} return false; }
         if (type === "UPDATE_LOCATOR_MODE") { try { const tabId = sender && sender.tab && sender.tab.id; if (tabId != null) { locatorModeStates.set(tabId, request.active); setIconForTab(tabId, request.active); } } catch (e) {} try { sendResponse && sendResponse({ ok: true }); } catch (e) {} return false; }
+        
+        if (type === "OPEN_STANDALONE") {
+            createStandaloneWindow();
+            try { sendResponse && sendResponse({ ok: true }); } catch (e) {}
+            return false;
+        }
+
+        if (type === "ELEMENT_SELECTED" || type === "PREVIEW_ELEMENT" || type === "CLEAR_PREVIEW" || type === "LOCATOR_MODE_CHANGED" || type === "ELEMENT_HISTORY_UPDATED") {
+            forwardToStandalone(type, request.data);
+            try { sendResponse && sendResponse({ ok: true, forwarded: true }); } catch (e) {}
+            return false;
+        }
 
         try { sendResponse && sendResponse({ ok: false, error: "Unhandled: " + type }); } catch (e) {}
         return false;

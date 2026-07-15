@@ -13,9 +13,25 @@
         <i data-lucide="mouse-pointer-click" class="btn-icon"></i>
         <span id="locatorBtnText">Start Pick</span>
       </button>
+      <button id="openStandaloneBtn" class="standalone-btn" title="Open in Separate Window">
+        <i data-lucide="external-link" class="btn-icon"></i>
+      </button>
     </div>
 
     <div class="content-area">
+      <div id="previewSection" class="preview-section">
+        <div class="preview-header">
+          <h4>
+            <i data-lucide="crosshair" class="section-icon"></i>
+            Current Preview
+          </h4>
+          <span class="preview-hint">Hover to preview, click to capture</span>
+        </div>
+        <div id="previewContent" class="preview-content">
+          <div class="preview-empty">Start picking and hover over an element to preview its locator</div>
+        </div>
+      </div>
+
       <div id="capturedElementsSection" class="captured-elements-section">
         <div id="capturedElementsHeader" class="captured-elements-header">
           <h4>

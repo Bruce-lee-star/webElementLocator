@@ -15,7 +15,8 @@
     "scripting",
     "activeTab",
     "storage",
-    "tabs"
+    "tabs",
+    "windows"
   ],
   "action": {
     "default_title": "Web Element Selector",
